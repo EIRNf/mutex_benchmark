@@ -22,6 +22,8 @@ public:
         nsync::nsync_mu_unlock(&my_mutex);
     }
     void destroy() override {}
+
+    std::string name(){return "nsync";};
     
 private:
     

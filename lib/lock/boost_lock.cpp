@@ -17,6 +17,8 @@ public:
         mutex_.unlock();
     }
     void destroy() override {}
+
+    std::string name(){return "boost";};
     
 private:
     boost::mutex mutex_;

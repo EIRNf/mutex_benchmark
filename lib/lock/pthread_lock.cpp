@@ -30,6 +30,9 @@ public:
     void destroy() override {
         pthread_mutex_destroy(&mutex_);
     }
+
+
+    std::string name(){return "pthread";};
     
 private:
     pthread_mutex_t mutex_;
