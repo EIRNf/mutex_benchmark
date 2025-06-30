@@ -17,14 +17,11 @@ public:
     void lock(size_t thread_id) override {
         // TODO refactor and remove goto
         unlocking[thread_id] = false;
-        // std::atomic_thread_fence(std::memory_order_seq_cst);
     try_again:
         c[thread_id] = true;
         std::atomic_thread_fence(std::memory_order_seq_cst);
         if (k != thread_id) {
-        // std::atomic_thread_fence(std::memory_order_seq_cst);
             while (!unlocking[k]) {}
-            // std::atomic_thread_fence(std::memory_order_seq_cst);
             k = thread_id;
             std::atomic_thread_fence(std::memory_order_seq_cst);
             
@@ -37,12 +34,12 @@ public:
                 goto try_again;
             }
         }
+
     }
     void unlock(size_t thread_id) override {
-        c[thread_id] = true;
         std::atomic_thread_fence(std::memory_order_seq_cst);
         unlocking[thread_id] = true;
-        std::atomic_thread_fence(std::memory_order_seq_cst);
+        c[thread_id] = true;
     }
     void destroy() override {
         free((void*)unlocking);
