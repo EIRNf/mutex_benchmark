@@ -8,9 +8,11 @@
 #include "dijkstra_lock.cpp"
 #include "spin_lock.cpp"
 #include "nsync_lock.cpp"
+#include "exp_spin_lock.cpp"
+#include "bakery_mutex.cpp"
 
 
-int max_contention_bench(int num_threads, int num_iterations, bool csv, SoftwareMutex* lock) {
+void max_contention_bench(int num_threads, int num_iterations, bool csv, bool thread_level, SoftwareMutex* lock) {
 
     // Create run args structure to hold thread arguments
     // struct run_args args;
@@ -40,30 +42,57 @@ int max_contention_bench(int num_threads, int num_iterations, bool csv, Software
     std::vector<std::thread> threads(num_threads);
     for (int i = 0; i < num_threads; ++i) {
         thread_args[i].start_flag = start_flag; // Share the start flag with each thread
-        threads[i] = std::thread([&thread_args, i, counter]() {
+        // I put the if statement here rather than inside the thread code so that fewer conditionals have to be checked
+        // in the runtime-importants section
+        if (thread_level) {
+            // Measure how long each thread takes to finish
+            threads[i] = std::thread([&thread_args, i, counter]() {
 
-            // Record the thread ID
-            thread_args[i].stats.thread_id = thread_args[i].thread_id;
-        
-            // Each thread will run this function
-            while (!*thread_args[i].start_flag) {
-                // Wait until the start flag is set
-            }
+                // Record the thread ID
+                thread_args[i].stats.thread_id = thread_args[i].thread_id;
+            
+                // Each thread will run this function
+                while (!*thread_args[i].start_flag) {
+                    // Wait until the start flag is set
+                }
 
-            // Start the timer for this thread
-            start_timer(&thread_args[i].stats);
+                // Start the timer for this thread
+                start_timer(&thread_args[i].stats);
 
-            // Perform the locking operations
-            for (int j = 0; j < thread_args[i].stats.num_iterations; ++j) {
-                thread_args[i].lock->lock(thread_args[i].thread_id);
-                (*counter)++;
-                // Critical section code goes here
-                thread_args[i].lock->unlock(thread_args[i].thread_id);
-            }
+                // Perform the locking operations
+                for (int j = 0; j < thread_args[i].stats.num_iterations; ++j) {
+                    thread_args[i].lock->lock(thread_args[i].thread_id);
+                    (*counter)++; // Critical section
+                    thread_args[i].lock->unlock(thread_args[i].thread_id);
+                }
 
-            // End the timer for this thread
-            end_timer(&thread_args[i].stats);
-        });
+                // End the timer for this thread
+                end_timer(&thread_args[i].stats);
+            });
+        } else {
+            // Measure individual lock operations
+            // May be affected by how long the clock takes to read
+            threads[i] = std::thread([&thread_args, i, counter]() {
+
+                // Record the thread ID
+                thread_args[i].stats.thread_id = thread_args[i].thread_id;
+                init_lock_timer(&thread_args[i].stats);
+            
+                // Each thread will run this function
+                while (!*thread_args[i].start_flag) {
+                    // Wait until the start flag is set
+                }
+
+                // Perform the locking operations
+                for (int j = 0; j < thread_args[i].stats.num_iterations; ++j) {
+                    start_lock_timer(&thread_args[i].stats, j);
+                    thread_args[i].lock->lock(thread_args[i].thread_id);
+                    (*counter)++; // Critical section
+                    thread_args[i].lock->unlock(thread_args[i].thread_id);
+                    end_lock_timer(&thread_args[i].stats, j);
+                }
+            });
+        }
     }
 
     // Start the threads
@@ -92,12 +121,11 @@ int max_contention_bench(int num_threads, int num_iterations, bool csv, Software
     // Output benchmark results
 
     for (auto& args : thread_args) {
-        report_thread_latency(&args.stats, csv); // Report latency for each thread
+        report_thread_latency(&args.stats, csv, thread_level); // Report latency for each thread
     }
 
     // record_rusage(); // Record resource usage
     // report_latency(&args); // Report latency if needed
-    return 0;
 }
 
 int main(int argc, char* argv[]) {
@@ -111,12 +139,15 @@ int main(int argc, char* argv[]) {
     int num_threads = -1;
     int num_iterations = -1;
     bool csv = false;
+    bool thread_level = false;
 
     for (int i = 1; i < argc; i++) 
     {
         // First, check if the argument is a flag, which can be placed anywhere.
         if (strcmp(argv[i], "--csv") == 0 || strcmp(argv[i], "-c") == 0) {
             csv = true;
+        } else if (strcmp(argv[i], "--thread-level") == 0 || strcmp(argv[i], "-t") == 0) {
+            thread_level = true;
         } else if (mutex_name == nullptr) {
             mutex_name = argv[i];
         } else if (num_threads == -1) {
@@ -144,11 +175,19 @@ int main(int argc, char* argv[]) {
         lock = new SpinLock();
     } else if (strcmp(mutex_name, "nsync") == 0){
         lock = new NSync();
+    } else if (strcmp(mutex_name, "exp_spin") == 0){
+        lock = new ExponentialSpinLock();
+    } else if (strcmp(mutex_name, "bakery") == 0){
+        lock = new BakeryMutex();
     } else {
-        fprintf(stderr, "Unrecognized mutex name: %s\nValid names are 'pthread', 'cpp_std', and 'boost'\n", mutex_name);
+        fprintf(stderr, "Unrecognized mutex name: %s"
+                "\nValid names are 'pthread', 'cpp_std', 'boost', 'dijkstra',"
+                "'spin', 'nsync', 'exp_spin', and 'bakery'\n", mutex_name);
         return 1;
     }    
     
     // Run the max contention benchmark
-    return max_contention_bench(num_threads, num_iterations, csv, lock);
+    max_contention_bench(num_threads, num_iterations, csv, thread_level, lock);
+
+    return 0;
 }

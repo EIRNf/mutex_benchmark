@@ -9,6 +9,7 @@ struct per_thread_args {
 
     std::shared_ptr<std::atomic<bool>> start_flag; // Shared flag to signal the start of the benchmark
     SoftwareMutex *lock; // Pointer to the lock object, type depends on the lock implementation
+    
 };
 
 struct run_args {
