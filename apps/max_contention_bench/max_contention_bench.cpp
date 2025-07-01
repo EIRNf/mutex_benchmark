@@ -12,7 +12,7 @@
 #include "bakery_mutex.cpp"
 
 
-void max_contention_bench(int num_threads, int num_iterations, bool csv, bool thread_level, SoftwareMutex* lock) {
+int max_contention_bench(int num_threads, int num_iterations, bool csv, bool thread_level, SoftwareMutex* lock) {
 
     // Create run args structure to hold thread arguments
     // struct run_args args;
