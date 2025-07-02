@@ -10,6 +10,7 @@
 #include "nsync_lock.cpp"
 #include "exp_spin_lock.cpp"
 #include "bakery_mutex.cpp"
+#include "lamport_lock.cpp"
 
 
 int max_contention_bench(int num_threads, std::chrono::seconds run_time, bool csv, SoftwareMutex* lock) {
@@ -161,6 +162,8 @@ int main(int argc, char* argv[]) {
         lock = new ExponentialSpinLock();
     } else if (strcmp(mutex_name, "bakery") == 0){
         lock = new BakeryMutex();
+    } else if (strcmp(mutex_name, "lamport") ==0){
+        lock = new LamportLock();
     } else {
         fprintf(stderr, "Unrecognized mutex name: %s"
                 "\nValid names are 'pthread', 'cpp_std', 'boost', 'dijkstra',"

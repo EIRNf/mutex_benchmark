@@ -1,0 +1,61 @@
+#include "lock.hpp"
+#include <stdexcept>
+#include <iostream>
+
+
+class LamportLock : public virtual SoftwareMutex {
+public:
+    void init(size_t num_threads) override {
+        this->x = (volatile size_t*)malloc(sizeof(size_t));;
+        this->y = (volatile size_t*)malloc(sizeof(size_t));;
+        this->b=(volatile bool*)malloc(sizeof(bool) * num_threads);
+        this->num_threads = num_threads;
+    }
+
+    void lock(size_t thread_id) override {
+    start:
+        b[thread_id] = true; //trying to grab the lock
+        *x = thread_id+1; //first confirmation
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+
+        if (*y!=0){
+            b[thread_id] = false; //no longer going for the lock
+            while (*y!=0){} //wait for whoever was trying to get it to get it
+            goto start; //restart
+        }
+
+        *y = thread_id + 1; //second confirmation
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+
+        if (*x!=thread_id+1){ //someone started going for the lock
+            b[thread_id] = false; //not longer going for the lock
+            for (int j=0; j<num_threads; j++){while(b[j]){}} //wait for contention to go down
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            if (*y!=thread_id+1){ //while waiting, someone messed with second confirmation
+                while(*y!=0){} //wait for the person to unlock
+                goto start;
+            }
+        }
+    }
+    
+    void unlock(size_t thread_id) override {
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        *y=0;
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        b[thread_id] = false;
+    }
+
+    void destroy() override {
+        free((void*)b);
+        free((void*)x);
+        free((void*)y);
+    }
+
+    std::string name(){return "lamport";}
+private:
+    volatile bool* b;
+    volatile size_t *x;
+    volatile size_t *y;
+
+    size_t num_threads;
+};
