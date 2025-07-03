@@ -1,4 +1,5 @@
 from .constants import *
+from .runner import get_data_file_name
 
 import pandas as pd
 
@@ -9,7 +10,7 @@ def load_data():
     for mutex_name in Constants.mutex_names:
         dataframes = []
         for i in range(Constants.n_program_iterations):
-            data_file_name = f"{Constants.data_folder}/{mutex_name}-{i}.csv"
+            data_file_name = get_data_file_name(mutex_name, i, Constants.bench_n_threads)
             dataframe = pd.read_csv(data_file_name, names=["Thread #", "Seconds", "# Iterations"])
             dataframes.append(dataframe)
         data[mutex_name] = pd.concat(dataframes)
@@ -20,7 +21,7 @@ def load_data_lock_level():
     for mutex_name in Constants.mutex_names:
         dataframes = []
         for i in range(Constants.n_program_iterations):
-            data_file_name = f"{Constants.data_folder}/{mutex_name}-{i}.csv"
+            data_file_name = get_data_file_name(mutex_name, i, Constants.bench_n_threads)
             dataframe = pd.read_csv(data_file_name, names=["Thread ID", "Iteration #", "Time Spent"])
             dataframes.append(dataframe)
         data[mutex_name] = pd.concat(dataframes)

@@ -4,8 +4,8 @@
 class DijkstraMutex : public virtual SoftwareMutex {
 public:
     void init(size_t num_threads) override {
-        this->unlocking = (volatile bool*)malloc(sizeof(bool) * num_threads);
-        this->c = (volatile bool*)malloc(sizeof(bool) * num_threads);
+        this->unlocking = (volatile std::atomic_bool*)malloc(sizeof(std::atomic_bool) * num_threads);
+        this->c         = (volatile std::atomic_bool*)malloc(sizeof(std::atomic_bool) * num_threads);
         for (size_t i = 0; i < num_threads; i++) {
             unlocking[i] = true;
             c[i] = true;
@@ -36,11 +36,13 @@ public:
         }
 
     }
+
     void unlock(size_t thread_id) override {
         std::atomic_thread_fence(std::memory_order_seq_cst);
         unlocking[thread_id] = true;
         c[thread_id] = true;
     }
+
     void destroy() override {
         free((void*)unlocking);
         free((void*)c);
@@ -49,8 +51,8 @@ public:
     std::string name(){return "djikstra";};
 
 private:
-    volatile bool *unlocking;
-    volatile bool *c;
-    volatile size_t k;
+    volatile std::atomic_bool *unlocking;
+    volatile std::atomic_bool *c;
+    volatile std::atomic<size_t> k;
     size_t num_threads;
 };
