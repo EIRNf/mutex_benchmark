@@ -14,7 +14,7 @@ struct per_thread_stats {
     int thread_id;
     int num_iterations;
 
-    std::chrono::seconds run_time;
+    std::chrono::nanoseconds run_time;
 };
 
 

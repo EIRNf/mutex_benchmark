@@ -38,17 +38,38 @@ def run_experiment_iter_v_threads():
     logger.info(output)
 
 
+def run_grouped_experiment_thread_level():
+    run_grouped_experiment_thread_level_single_threaded()
+    data = load_data()
+    output = analyze(data)
+    print(output)
+    logger.info(output)
+
+def run_grouped_experiment_iter_v_threads():
+    run_grouped_experiment_iter_v_threads_single_threaded()
+    data = load_data_iter_v_threads()
+    output = analyze_iter_v_threads(data)
+    print(output)
+    logger.info(output)
+
 def main():
     init_args()
     init_logger()
     setup()
     build()
-    if Constants.thread_level:
-        run_experiment_thread_level()
-    elif Constants.iter_v_threads:
-        run_experiment_iter_v_threads()
-    else:
-        run_experiment_lock_level()
+    if Constants.bench == 'max':
+        if Constants.thread_level:
+            run_experiment_thread_level()
+        elif Constants.iter_v_threads:
+            run_experiment_iter_v_threads()
+        else:
+            run_experiment_lock_level()
+    elif Constants.bench == 'grouped':
+        if Constants.thread_level:
+            run_grouped_experiment_thread_level()
+        else:
+            run_grouped_experiment_iter_v_threads()
+
 
 if __name__ == "__main__":
     main()
