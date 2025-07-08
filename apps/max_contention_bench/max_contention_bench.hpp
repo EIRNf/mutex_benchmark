@@ -19,4 +19,4 @@ struct run_args {
     struct rusage usage;
 };
 
-int max_contention_bench(int num_threads, std::chrono::seconds run_time, bool csv, SoftwareMutex* lock);
+int max_contention_bench(int num_threads, std::chrono::seconds run_time, bool csv, bool rusage, bool thread_level, bool no_output, int max_noncritical_delay_ns, SoftwareMutex* lock);

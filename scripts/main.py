@@ -31,11 +31,18 @@ def run_experiment_lock_level():
     logger.info(output)
 
 def run_experiment_iter_v_threads():
-    run_experiment_iter_v_threads_single_threaded()
-    data = load_data_iter_v_threads()
-    output = analyze_iter_v_threads(data)
-    print(output)
-    logger.info(output)
+    if not(Constants.rusage):
+        run_experiment_iter_v_threads_single_threaded()
+        data = load_data_iter_v_threads()
+        output = analyze_iter_v_threads(data)
+        print(output)
+        logger.info(output)
+    else: 
+        # run_experiment_iter_v_threads_single_threaded(rusageGet=True)
+        data = load_data_iter_v_threads(rusage=True)
+        output = analyze_iter_v_threads_rusage(data)
+        print(output)
+        logger.info(output)
 
 
 def main():

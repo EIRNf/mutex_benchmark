@@ -18,6 +18,7 @@ public:
 
     void lock(size_t thread_id) override {
         choosing[thread_id] = 1;
+        Fence();
         int max_number = 0;
         for (size_t i = 0; i < num_threads; ++i) {
             if (number[i] > max_number) {
@@ -25,32 +26,32 @@ public:
             }
         }
         number[thread_id] = max_number + 1;
+        Fence();
         choosing[thread_id] = 0;
+        Fence();
         
         //limit the number of thread to check
         size_t limit;
         if (number[thread_id] == 1 && thread_id > 0) {limit = thread_id;}
         else {limit = num_threads;}
 
+        int prev_j, curr_j;
         for (size_t j = 0; j < limit; ++j) {
             if (j == thread_id) continue;
             while (choosing[j]) {}
-            int prev_j = number[j];
-            int curr_j = number[j];
+            prev_j = number[j];
+            curr_j = number[j];
             while (curr_j != 0 && (curr_j < number[thread_id] || (curr_j == number[thread_id] && j < thread_id)) && curr_j == prev_j) {
                     prev_j = curr_j;
                     curr_j = number[j];
             }
         }
+        Fence();
     }
-
-
-
 
     void unlock(size_t thread_id) override {
         number[thread_id] = 0;
     }
-
 
     void destroy() override {
         free((void *)choosing);

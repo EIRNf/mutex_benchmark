@@ -45,8 +45,8 @@ struct run_stats {
 
 // Use getrusage  to record resource usage
 
-void record_rusage();
-void print_rusage(struct rusage *usage);
+void record_rusage(bool csv);
+void print_rusage(struct rusage *usage, bool csv);
 
 void init_lock_timer(struct per_thread_stats *stats);
 void start_lock_timer(struct per_thread_stats *stats);

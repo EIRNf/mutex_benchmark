@@ -23,7 +23,7 @@
 #include "boulangerie.cpp"
 
 
-int max_contention_bench(int num_threads, std::chrono::seconds run_time, bool csv, bool thread_level, bool no_output, int max_noncritical_delay_ns, SoftwareMutex* lock) {
+int max_contention_bench(int num_threads, std::chrono::seconds run_time, bool csv, bool rusage, bool thread_level, bool no_output, int max_noncritical_delay_ns, SoftwareMutex* lock) {
 
 
     // Create run args structure to hold thread arguments
@@ -59,7 +59,7 @@ int max_contention_bench(int num_threads, std::chrono::seconds run_time, bool cs
         // in the runtime-importants section
         if (thread_level) {
             // Measure how long each thread takes to finish
-            threads[i] = std::thread([&thread_args, i, counter]() {
+            threads[i] = std::thread([&thread_args, i, counter, rusage]() {
 
                 // Record the thread ID
                 thread_args[i].stats.thread_id = thread_args[i].thread_id;
@@ -74,6 +74,7 @@ int max_contention_bench(int num_threads, std::chrono::seconds run_time, bool cs
                     thread_args[i].lock->lock(thread_args[i].thread_id);
                     thread_args[i].stats.num_iterations++;
                     (*counter)++; // Critical section
+                    Fence(); //ensure that counter was updated before unlocking; required for any impl.
                     thread_args[i].lock->unlock(thread_args[i].thread_id);
                 }
             });
@@ -116,6 +117,11 @@ int max_contention_bench(int num_threads, std::chrono::seconds run_time, bool cs
     std::this_thread::sleep_for(run_time);
     *end_flag = true;
 
+
+    if (rusage && !no_output){
+        record_rusage(csv);
+    }
+
     // Wait for all threads to finish
     for (auto& thread : threads) {
         if (thread.joinable()) {
@@ -143,7 +149,7 @@ int max_contention_bench(int num_threads, std::chrono::seconds run_time, bool cs
 
     // Output benchmark results
 
-    if (!no_output) {
+    if (!no_output && !rusage) {
         for (auto& args : thread_args) {
             report_thread_latency(&args.stats, csv, thread_level);
             if (!thread_level) {
@@ -171,6 +177,7 @@ int main(int argc, char* argv[]) {
     bool csv = false;
     bool thread_level = false;
     bool no_output = false;
+    bool rusage = true;
 
     for (int i = 1; i < argc; i++) 
     {
@@ -179,6 +186,8 @@ int main(int argc, char* argv[]) {
             csv = true;
         } else if (strcmp(argv[i], "--thread-level") == 0 || strcmp(argv[i], "-t") == 0) {
             thread_level = true;
+        } else if (strcmp(argv[i], "--rusage") == 0 || strcmp(argv[i], "-r") == 0) {
+            rusage=true;
         } else if (strcmp(argv[i], "--no-output") == 0 || strcmp(argv[i], "-n") == 0) {
             no_output = true;
         } else if (mutex_name == nullptr) {
@@ -247,7 +256,7 @@ int main(int argc, char* argv[]) {
     }    
     
     // Run the max contention benchmark
-    max_contention_bench(num_threads, std::chrono::seconds(run_time), csv, thread_level, no_output, max_noncritical_delay_ns, lock);
+    max_contention_bench(num_threads, std::chrono::seconds(run_time), csv, rusage, thread_level, no_output, max_noncritical_delay_ns, lock);
 
     return 0;
 }

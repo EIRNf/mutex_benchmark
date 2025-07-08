@@ -73,3 +73,37 @@ def analyze_iter_v_threads(data):
         
     finish_plotting_graph(axis)
     return output
+
+def analyze_iter_v_threads_rusage(data):
+    output=""
+    output +="\n"
+    figure, axis = plt.subplots(1, 2)
+    for mutex_name in Constants.mutex_names:
+        # output += f"Mutex {mutex_name:>8} average time: {np.array(data[mutex_name]).mean():.7f} standard deviation: {np.array(data[mutex_name]).mean():.7f}\n"
+        user_time = [thread[0].mean() for thread in data[mutex_name]]
+        plot_one_graph(
+            axis[0],
+            np.array(range(Constants.threads_start, Constants.threads_end, Constants.threads_step)),
+            user_time,
+            mutex_name,
+            xlabel="# of Threads",
+            ylabel="User time",
+            title=f"{mutex_name}",
+            skip=-1
+        )
+
+        sys_time = [thread[1].mean() for thread in data[mutex_name]]
+        plot_one_graph(
+            axis[1],
+            np.array(range(Constants.threads_start, Constants.threads_end, Constants.threads_step)),
+            sys_time,
+            mutex_name,
+            xlabel="# of Threads",
+            ylabel="System time",
+            title=f"{mutex_name}",
+            skip=-1
+        )
+
+        
+    finish_plotting_graph(axis, rusage=True)
+    return output

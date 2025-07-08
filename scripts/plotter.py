@@ -21,21 +21,28 @@ def finish_plotting_cdf(thread_time_or_lock_time):
         handle._sizes = [30]
     plt.show()
 
-def finish_plotting_graph(axis):
+def finish_plotting_graph(axis, rusage=False):
     print("Finishing plotting...")
-    axis[0].set_title(f"# Iterations v threads for {Constants.bench_n_seconds} seconds ({Constants.n_program_iterations}x)")
-    axis[0].set_yscale('log')
-
-    axis[1].set_title(f"Std. dev of # Iterations v threads for {Constants.bench_n_seconds} seconds ({Constants.n_program_iterations}x)")
-    axis[1].set_yscale('log')
-    # plt.xscale('log')
+    if not(rusage):
+        axis[0].set_title(f"# Iterations v threads for {Constants.bench_n_seconds} seconds ({Constants.n_program_iterations}x)")
+        axis[0].set_yscale('log')
+    else:
+        axis[0].set_title(f"# User time v threads for {Constants.bench_n_seconds} seconds ({Constants.n_program_iterations}x)")
     legend = axis[0].legend()
     for handle in legend.legend_handles:
         handle._sizes = [30]
 
-    legend = axis[1].legend()
-    for handle in legend.legend_handles:
-        handle._sizes = [30]
+    if len(axis)>1:
+        if not(rusage):
+            axis[1].set_title(f"Std. dev of # Iterations v threads for {Constants.bench_n_seconds} seconds ({Constants.n_program_iterations}x)")
+            axis[1].set_yscale('log')
+        else:
+            axis[1].set_title(f"System time v threads for {Constants.bench_n_seconds} seconds ({Constants.n_program_iterations}x)")
+
+        legend = axis[1].legend()
+        for handle in legend.legend_handles:
+            handle._sizes = [30]
+    # plt.xscale('log')
     plt.show()
 
 def plot_one_cdf(series, mutex_name, xlabel="", ylabel="", title="", skip=-1, worst_case=-1, average_lock_time=None):

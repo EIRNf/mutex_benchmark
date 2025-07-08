@@ -1,6 +1,6 @@
 #include "lock.hpp"
 #include <stdexcept>
-#include <atomic>
+#include "../utils/bench_utils.hpp"
 
 class BakeryNonAtomicMutex : public virtual SoftwareMutex {
 public:
@@ -18,15 +18,19 @@ public:
         // struct timespec nanosleep_timespec = { 0, 10 };
         // Get "bakery number"
         choosing[thread_id] = true;
+        Fence();
         size_t my_bakery_number;
         for (size_t i = 0; i < num_threads; i++) {
             if (number[i] + 1 > my_bakery_number) {
                 my_bakery_number = number[i] + 1;
             }
         }
+        
         number[thread_id] = my_bakery_number;
-        std::atomic_thread_fence(std::memory_order_seq_cst);
+        Fence();
         choosing[thread_id] = false;
+        Fence();
+
         // Lock waiting part
         for (size_t j = 0; j < num_threads; j++) {
             while (choosing[j] != 0) {
@@ -39,9 +43,10 @@ public:
                 // nanosleep(&nanosleep_timespec, &remaining);
             }
         }
+        
+        Fence();
     }
     void unlock(size_t thread_id) override {
-        std::atomic_thread_fence(std::memory_order_seq_cst);
         number[thread_id] = 0;
     }
     void destroy() override {

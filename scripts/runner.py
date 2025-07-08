@@ -5,16 +5,21 @@ import subprocess
 
 # TODO: save data files instead of deleting them every time (in their own folder)
 
-def get_data_file_name(mutex_name, i, threads):
-    return f"{Constants.data_folder}/{mutex_name}-{threads}-{i}.csv"
+def get_data_file_name(mutex_name, i, threads, rusage=False):
+    if not(rusage):
+        return f"{Constants.data_folder}/{mutex_name}-{threads}-{i}.csv"
+    else:
+        return f"{Constants.data_folder}/{mutex_name}-{threads}-{i}-rusage.csv"
 
-def get_command(mutex_name, threads, *, csv=True, thread_level=False):
+def get_command(mutex_name, threads, *, csv=True, thread_level=False, rusage=False):
     args = [Constants.Defaults.EXECUTABLE, mutex_name, 
         str(threads), str(Constants.bench_n_seconds), str(Constants.noncritical_delay)]
     if csv:
         args.append("--csv")
     if thread_level:
         args.append("--thread-level")
+    if rusage:
+        args.append("--rusage")
     return args
 
 # Should this be removed?
@@ -66,14 +71,14 @@ def run_experiment_lock_level_single_threaded():
                 data_file.write(csv_data)
 
 
-def run_experiment_iter_v_threads_single_threaded():
+def run_experiment_iter_v_threads_single_threaded(rusageGet=False):
     for threads in range(Constants.threads_start, Constants.threads_end, Constants.threads_step):
         for i in range(Constants.n_program_iterations):
             for mutex_name in Constants.mutex_names:
                 logger.info(f"{mutex_name=} | {threads=} | {i=}")
-                data_file_name = get_data_file_name(mutex_name, i, threads)
+                data_file_name = get_data_file_name(mutex_name, i, threads, rusage=rusageGet)
                 subprocess.run(["rm", "-f", data_file_name])
-                command = get_command(mutex_name, threads, csv=True, thread_level=True)
+                command = get_command(mutex_name, threads, csv=True, thread_level=True, rusage=rusageGet)
                 thread=subprocess.run(command, stdout=subprocess.PIPE)
                 csv_data = thread.stdout
                 with open(data_file_name, "wb") as data_file:

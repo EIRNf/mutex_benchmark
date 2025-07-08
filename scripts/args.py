@@ -23,6 +23,8 @@ def init_args():
     experiment_type.add_argument('--lock-level', action='store_true')
     experiment_type.add_argument('--iter-v-threads', type=int, nargs=3)
 
+    parser.add_argument('-r', '--rusage', action='store_true')
+
     parser.add_argument('-l', '--log', type=str, default=Constants.Defaults.LOG)
     parser.add_argument('--data-folder', nargs='?', type=str, default=Constants.Defaults.DATA_FOLDER)
     parser.add_argument('--log-folder', nargs='?', type=str, default=Constants.Defaults.LOGS_FOLDER)
@@ -65,6 +67,7 @@ def init_args():
     logger.debug(Constants.data_folder)
     Constants.logs_folder = args.log_folder
     Constants.executable = Constants.Defaults.EXECUTABLE
+    Constants.rusage = args.rusage
     Constants.multithreaded = args.multithreaded
     Constants.thread_level = args.thread_level
     Constants.iter_v_threads = args.iter_v_threads

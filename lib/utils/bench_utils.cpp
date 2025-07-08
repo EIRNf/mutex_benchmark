@@ -6,34 +6,39 @@
 
 
 
-void record_rusage() {
+void record_rusage(bool csv) {
     struct rusage usage;
     if (getrusage(RUSAGE_SELF, &usage) == 0) {
-        print_rusage(&usage);
+        print_rusage(&usage, csv);
     } else {
         perror("getrusage failed");
     }
 }
 
-void print_rusage(struct rusage *usage) {
-    printf("User CPU time used: %ld.%06ld seconds\n", 
-           usage->ru_utime.tv_sec, usage->ru_utime.tv_usec);
-    printf("System CPU time used: %ld.%06ld seconds\n", 
-           usage->ru_stime.tv_sec, usage->ru_stime.tv_usec);
-    printf("Maximum resident set size: %ld KB\n", usage->ru_maxrss);
-    printf("Integral shared memory size: %ld KB\n", usage->ru_ixrss);
-    printf("Integral unshared data size: %ld KB\n", usage->ru_idrss);
-    printf("Integral unshared stack size: %ld KB\n", usage->ru_isrss);
-    printf("Page reclaims (soft page faults): %ld\n", usage->ru_minflt);
-    printf("Page faults (hard page faults): %ld\n", usage->ru_majflt);
-    printf("Swaps: %ld\n", usage->ru_nswap);
-    printf("Block input operations: %ld\n", usage->ru_inblock);
-    printf("Block output operations: %ld\n", usage->ru_oublock);
-    printf("IPC messages sent: %ld\n", usage->ru_msgsnd);
-    printf("IPC messages received: %ld\n", usage->ru_msgrcv);
-    printf("Signals received: %ld\n", usage->ru_nsignals);
-    printf("Voluntary context switches: %ld\n", usage->ru_nvcsw);
-    printf("Involuntary context switches: %ld\n", usage->ru_nivcsw);
+void print_rusage(struct rusage *usage, bool csv) {
+    if (!csv){
+        printf("User CPU time used: %ld.%06ld seconds\n", 
+            usage->ru_utime.tv_sec, usage->ru_utime.tv_usec); //slightly important, not as much
+        printf("System CPU time used: %ld.%06ld seconds\n", 
+            usage->ru_stime.tv_sec, usage->ru_stime.tv_usec); //important and relevant
+        printf("Maximum resident set size: %ld KB\n", usage->ru_maxrss); //not too important?
+        printf("Integral shared memory size: %ld KB\n", usage->ru_ixrss); //unmantained
+        printf("Integral unshared data size: %ld KB\n", usage->ru_idrss); //unmantained
+        printf("Integral unshared stack size: %ld KB\n", usage->ru_isrss); //unmantained
+        printf("Page reclaims (soft page faults): %ld\n", usage->ru_minflt); //slightly important
+        printf("Page faults (hard page faults): %ld\n", usage->ru_majflt); //slightly important
+        printf("Swaps: %ld\n", usage->ru_nswap); //unmantained 
+        printf("Block input operations: %ld\n", usage->ru_inblock); //just linux
+        printf("Block output operations: %ld\n", usage->ru_oublock); //just linux
+        printf("IPC messages sent: %ld\n", usage->ru_msgsnd); //unmantained
+        printf("IPC messages received: %ld\n", usage->ru_msgrcv); //unmantained
+        printf("Signals received: %ld\n", usage->ru_nsignals); //unmantained
+        printf("Voluntary context switches: %ld\n", usage->ru_nvcsw); //just linux
+        printf("Involuntary context switches: %ld\n", usage->ru_nivcsw); //just linux
+    }
+    else{
+        printf("%ld.%06ld,%ld.%06ld,%ld,%ld,%ld", usage->ru_utime.tv_sec, usage->ru_utime.tv_usec, usage->ru_stime.tv_sec, usage->ru_stime.tv_usec, usage->ru_maxrss, usage->ru_minflt, usage->ru_majflt);
+    }
 }
 
 void init_lock_timer(struct per_thread_stats *stats) {

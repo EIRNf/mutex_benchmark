@@ -19,16 +19,16 @@ public:
         unlocking[thread_id] = false;
     try_again:
         c[thread_id] = true;
-        std::atomic_thread_fence(std::memory_order_seq_cst);
+        Fence();
         if (k != thread_id) {
             while (!unlocking[k]) {}
             k = thread_id;
-            std::atomic_thread_fence(std::memory_order_seq_cst);
+            Fence();
             
             goto try_again;
         } 
         c[thread_id] = false;
-        std::atomic_thread_fence(std::memory_order_seq_cst);
+        Fence();
         for (size_t j = 0; j < num_threads; j++) {
             if (j != thread_id && !c[j]) {
                 goto try_again;
@@ -37,7 +37,6 @@ public:
 
     }
     void unlock(size_t thread_id) override {
-        std::atomic_thread_fence(std::memory_order_seq_cst);
         unlocking[thread_id] = true;
         c[thread_id] = true;
     }
