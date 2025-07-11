@@ -9,7 +9,7 @@
 #include "boost_lock.cpp"
 #include "dijkstra_lock.cpp"
 #include "dijkstra_nonatomic_lock.cpp"
-#include "spin_lock.cpp"
+#include "spin_lock.hpp"
 #include "nsync_lock.cpp"
 #include "exp_spin_lock.cpp"
 #include "bakery_mutex.cpp"
@@ -21,11 +21,26 @@
 #include "knuth_lock.cpp"
 #include "peterson_lock.cpp"
 #include "boulangerie.cpp"
+#include "ticket_lock.cpp"
+#include "threadlocal_ticket_lock.cpp"
+#include "ring_ticket_lock.cpp"
+#include "null_mutex.cpp"
+#include "halfnode_lock.cpp"
+#include "hopscotch_lock.cpp"
+#include "clh_lock.cpp"
+#include "linear_cas_elevator.cpp"
+#include "tree_cas_elevator.cpp"
 
-
-int max_contention_bench(int num_threads, std::chrono::seconds run_time, bool csv, bool thread_level, bool no_output, int max_noncritical_delay_ns, SoftwareMutex* lock) {
-
-
+int max_contention_bench(
+    int num_threads, 
+    double run_time, 
+    bool csv, 
+    bool thread_level, 
+    bool no_output, 
+    int max_critical_delay_iterations, 
+    int max_noncritical_delay_iterations, 
+    SoftwareMutex* lock
+) {
     // Create run args structure to hold thread arguments
     // struct run_args args;
     // args.num_threads = num_threads;
@@ -80,7 +95,7 @@ int max_contention_bench(int num_threads, std::chrono::seconds run_time, bool cs
         } else {
             // Measure individual lock operations
             // May be affected by how long the clock takes to read
-            threads[i] = std::thread([&thread_args, i, counter, max_noncritical_delay_ns]() {
+            threads[i] = std::thread([&thread_args, i, counter, max_critical_delay_iterations, max_noncritical_delay_iterations]() {
 
                 // Record the thread ID
                 thread_args[i].stats.thread_id = thread_args[i].thread_id;
@@ -91,20 +106,34 @@ int max_contention_bench(int num_threads, std::chrono::seconds run_time, bool cs
                     // Wait until the start flag is set
                 }
 
-                struct timespec delay = { 0, 0 };
-                struct timespec _remaining;
+                // struct timespec delay_critical = { 0, 0 };
+                // struct timespec delay_noncritical = { 0, 0 };
+                // struct timespec _remaining;
 
                 // Perform the locking operations
                 while (!*thread_args[i].end_flag) {
+                    // Lock
                     start_lock_timer(&thread_args[i].stats);
                     thread_args[i].lock->lock(thread_args[i].thread_id);
-                    (*counter)++; // Critical section
+
+                    // Critical section
+                    (*counter)++; // Nonatomic work
+                    busy_sleep(rand() % max_critical_delay_iterations);
+                    // if (max_critical_delay_iterations != 1) { // Delay
+                    //     delay_critical.tv_nsec = rand() % max_critical_delay_iterations;
+                    //     nanosleep(&delay_critical, &_remaining);
+                    // }
+
+                    // Unlock
                     thread_args[i].lock->unlock(thread_args[i].thread_id);
                     end_lock_timer(&thread_args[i].stats);
                     
                     // Noncritical section
-                    delay.tv_nsec = rand() % max_noncritical_delay_ns;
-                    nanosleep(&delay, &_remaining);
+                    // if (max_noncritical_delay_iterations != 1) {
+                    //     delay_noncritical.tv_nsec = rand() % max_noncritical_delay_iterations;
+                    //     nanosleep(&delay_noncritical, &_remaining);
+                    // }
+                    busy_sleep(rand() % max_noncritical_delay_iterations);
                     thread_args[i].stats.num_iterations++;
                 }
             });
@@ -113,7 +142,7 @@ int max_contention_bench(int num_threads, std::chrono::seconds run_time, bool cs
 
     // Start the threads
     *start_flag = true; // Set the start flag to signal the threads to begin
-    std::this_thread::sleep_for(run_time);
+    std::this_thread::sleep_for(std::chrono::duration<double>(run_time));
     *end_flag = true;
 
     // Wait for all threads to finish
@@ -128,8 +157,8 @@ int max_contention_bench(int num_threads, std::chrono::seconds run_time, bool cs
         expected_iterations+=thread_args[i].stats.num_iterations;
     }
 
-    if (*counter != expected_iterations) {
-        // The mutex did not work.
+    if (*counter != expected_iterations && lock->name() != "null") {
+        // The mutex did not work (null mutex is for testing benchmarking and should always fail.)
         fprintf(stderr, "Mutex %s failed; *counter != num_threads * num_iterations (%d!=%d)\n", lock->name().c_str(), *counter, expected_iterations);
         return 1;
     }
@@ -166,8 +195,9 @@ int main(int argc, char* argv[]) {
     // First, take in command line arguments
     char *mutex_name = nullptr;
     int num_threads = -1;
-    int run_time = -1;
-    int max_noncritical_delay_ns = -1;
+    double run_time = -1;
+    int max_critical_delay_iterations = -1;
+    int max_noncritical_delay_iterations = -1;
     bool csv = false;
     bool thread_level = false;
     bool no_output = false;
@@ -185,12 +215,12 @@ int main(int argc, char* argv[]) {
             mutex_name = argv[i];
         } else if (num_threads == -1) {
             num_threads = atoi(argv[i]);
-        } else if (run_time == -1) {
-            run_time = atoi(argv[i]);
-        } else if (run_time == -1) {
-            run_time = atoi(argv[i]);
-        } else if (max_noncritical_delay_ns == -1) {
-            max_noncritical_delay_ns = atoi(argv[i]);
+        } else if (run_time < 0) {
+            run_time = atof(argv[i]);
+        } else if (max_critical_delay_iterations == -1) {
+            max_critical_delay_iterations = atoi(argv[i]);
+        } else if (max_noncritical_delay_iterations == -1) {
+            max_noncritical_delay_iterations = atoi(argv[i]);
         } else {
             fprintf(stderr, "Unrecognized command line argument: %s\n", argv[i]);
             return 1;
@@ -198,8 +228,13 @@ int main(int argc, char* argv[]) {
     }
 
     // Default arguments
-    if (max_noncritical_delay_ns <= 0) {
-        max_noncritical_delay_ns = 1;
+    assert(max_critical_delay_iterations < 100000000);
+    assert(max_noncritical_delay_iterations < 100000000);
+    if (max_critical_delay_iterations <= 0) {
+        max_critical_delay_iterations = 1;
+    }
+    if (max_noncritical_delay_iterations <= 0) {
+        max_noncritical_delay_iterations = 1;
     }
 
     // Create a lock instance (using Pthread lock as an example)
@@ -237,17 +272,37 @@ int main(int argc, char* argv[]) {
         lock = new KnuthMutex();
     } else if (strcmp(mutex_name, "peterson") == 0){
         lock = new PetersonMutex();
+    } else if (strcmp(mutex_name, "ticket") == 0){
+        lock = new TicketMutex();
+    } else if (strcmp(mutex_name, "threadlocal_ticket") == 0){
+        lock = new ThreadlocalTicketMutex();
+    } else if (strcmp(mutex_name, "ring_ticket") == 0){
+        lock = new RingTicketMutex();
+    } else if (strcmp(mutex_name, "null") == 0){
+        lock = new NullMutex();
+    } else if (strcmp(mutex_name, "halfnode") == 0){
+        lock = new HalfnodeMutex();
+    } else if (strcmp(mutex_name, "hopscotch") == 0){
+        lock = new HopscotchMutex();
+    } else if (strcmp(mutex_name, "clh") == 0){
+        lock = new CLHMutex();
     } else if (strcmp(mutex_name, "boulangerie") == 0) {
         lock = new Boulangerie();
+    } else if (strcmp(mutex_name, "linear_cas_elevator") == 0) {
+        lock = new LinearCASElevatorMutex();
+    } else if (strcmp(mutex_name, "tree_cas_elevator") == 0) {
+        lock = new TreeCASElevatorMutex();
     } else {
         fprintf(stderr, "Unrecognized mutex name: %s"
-                "\nValid names are 'pthread', 'cpp_std', 'boost', 'dijkstra',"
-                "'spin', 'nsync', 'exp_spin', 'bakery', 'dijkstra_nonatomic', 'mcs', 'knuth', and 'peterson'\n", mutex_name);
+                "\nValid names include 'pthread', 'cpp_std', 'boost', 'dijkstra',"
+                " 'spin', 'nsync', 'exp_spin', 'bakery', 'dijkstra_nonatomic', 'mcs',"
+                " 'knuth', 'peterson', 'ticket', 'threadlocal_ticket', 'ring_ticket',"
+                " 'halfnode', 'hopscotch', 'clh', 'linear_cas_elevator', and 'tree_cas_elevator'\n", mutex_name);
         return 1;
     }    
-    
+
     // Run the max contention benchmark
-    max_contention_bench(num_threads, std::chrono::seconds(run_time), csv, thread_level, no_output, max_noncritical_delay_ns, lock);
+    max_contention_bench(num_threads, run_time, csv, thread_level, no_output, max_critical_delay_iterations, max_noncritical_delay_iterations, lock);
 
     return 0;
 }

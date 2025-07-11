@@ -4,17 +4,16 @@
 
 class Boulangerie : public virtual SoftwareMutex {
 public:
-    std::string name() override { return "bakery"; }
+    std::string name() override { return "boulangerie"; }
     void init(size_t num_threads) override {
         this->num_threads = num_threads;
-        this->choosing = (volatile int*)malloc(num_threads * sizeof(int));
-        this->number = (volatile int*)malloc(num_threads * sizeof(int));
+        this->choosing = (volatile bool*)malloc(num_threads * sizeof(volatile bool));
+        this->number = (volatile int*)malloc(num_threads * sizeof(volatile int));
         for (size_t i = 0; i < num_threads; i++) {
             choosing[i] = 0;
             number[i] = 0;
         }
     }
-
 
     void lock(size_t thread_id) override {
         choosing[thread_id] = 1;
@@ -26,6 +25,7 @@ public:
         }
         number[thread_id] = max_number + 1;
         choosing[thread_id] = 0;
+        std::atomic_thread_fence(std::memory_order_seq_cst);
         
         //limit the number of thread to check
         size_t limit;
@@ -60,7 +60,7 @@ public:
 
 private:
     size_t num_threads;
-    volatile int *choosing;
+    volatile bool *choosing;
     volatile int *number;
 };
 

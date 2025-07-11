@@ -74,24 +74,24 @@ void report_thread_latency(struct per_thread_stats *stats, bool csv, bool thread
     if (thread_level) {
         if (csv) {
             // Thread ID, Runtime, # Iterations
-            printf("%d,%ld,%d\n", stats->thread_id, stats->run_time.count(), stats->num_iterations);
+            printf("%d,%f,%d\n", stats->thread_id, stats->run_time, stats->num_iterations);
         } else {
-            printf("Thread %d: %d iterations completed in %ld seconds\n",
-                stats->thread_id, stats->num_iterations, stats->run_time.count());
+            printf("Thread %d: %d iterations completed in %f seconds\n",
+                stats->thread_id, stats->num_iterations, stats->run_time);
         }
     } else {
         if (csv) {
             for (int i = 0; i < stats->num_iterations; i++) {
                 // Thread ID, Iteration #, Time to lock
-                printf("%d,%d,%.10f\n", stats->thread_id, i, stats->lock_times[i]);
+                printf("%d,%d,%.9f\n", stats->thread_id, i, stats->lock_times[i]);
             }
         }
         else {
-            printf("Thread %d: %d iterations completed in %ld seconds\n",
-                stats->thread_id, stats->num_iterations, stats->run_time.count());
+            printf("Thread %d: %d iterations completed in %f seconds\n",
+                stats->thread_id, stats->num_iterations, stats->run_time);
             for (int i = 0; i < stats->num_iterations; i++) {
                 // Thread ID, Iteration #, Time to lock
-                printf("    #%d: iteration %d took %.10f seconds\n", stats->thread_id, i, stats->lock_times[i]);
+                printf("    #%d: iteration %d took %.9f seconds\n", stats->thread_id, i, stats->lock_times[i]);
             }
         }
     }
@@ -102,4 +102,8 @@ void report_run_latency(struct run_args *stats){
     (void)stats;
 }
 
+void busy_sleep(size_t iterations) {
+    volatile size_t i;
+    for (i = 0; i < iterations; i++);
+}
 

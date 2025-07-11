@@ -12,7 +12,7 @@ def init_args():
         epilog=''
     )
     parser.add_argument('threads', type=int)
-    parser.add_argument('seconds', type=int)
+    parser.add_argument('seconds', type=float)
     parser.add_argument('program_iterations', type=int)
     # parser.add_argument('threads_start', type=int, default=0, nargs='?')
     # parser.add_argument('threads_end',   type=int, default=0, nargs='?')
@@ -21,7 +21,9 @@ def init_args():
     experiment_type = parser.add_mutually_exclusive_group()
     experiment_type.add_argument('--thread-level', action='store_true')
     experiment_type.add_argument('--lock-level', action='store_true')
-    experiment_type.add_argument('--iter-v-threads', type=int, nargs=3)
+    experiment_type.add_argument('--iter-threads', type=int, nargs=3)
+    experiment_type.add_argument('--iter-noncritical-delay', type=int, nargs=3)
+    experiment_type.add_argument('--iter-critical-delay', type=int, nargs=3)
 
     parser.add_argument('-l', '--log', type=str, default=Constants.Defaults.LOG)
     parser.add_argument('--data-folder', nargs='?', type=str, default=Constants.Defaults.DATA_FOLDER)
@@ -33,9 +35,11 @@ def init_args():
     mutex_names.add_argument('-a', '--all', action='store_true')
     
     parser.add_argument('--scatter', action='store_true', default=False)
+    parser.add_argument('--skip-experiment', action='store_true', default=False)
     parser.add_argument('-m', '--multithreaded', action='store_true')
     parser.add_argument('-p', '--max-n-points', type=int, default=Constants.Defaults.MAX_N_POINTS, nargs='?')
     parser.add_argument('-n', '--noncritical-delay', type=int, default=1, nargs='?')
+    parser.add_argument('-c', '--critical-delay', type=int, default=1, nargs='?')
 
     log = parser.add_mutually_exclusive_group()
     log.add_argument('-d', '--debug', action='store_const', dest='log', const='DEBUG', default='DEBUG')
@@ -59,18 +63,21 @@ def init_args():
     # Constants.threads_start = args.threads_start
     # Constants.threads_end = args.threads_end
     # Constants.threads_step = args.threads_step
-    if args.iter_v_threads is not None:
-        Constants.threads_start, Constants.threads_end, Constants.threads_step = args.iter_v_threads
+    Constants.iter_threads = args.iter_threads
+    Constants.iter_noncritical_delay = args.iter_noncritical_delay
+    Constants.iter_critical_delay = args.iter_critical_delay
+
     Constants.data_folder = args.data_folder
     logger.debug(Constants.data_folder)
     Constants.logs_folder = args.log_folder
     Constants.executable = Constants.Defaults.EXECUTABLE
     Constants.multithreaded = args.multithreaded
     Constants.thread_level = args.thread_level
-    Constants.iter_v_threads = args.iter_v_threads
     Constants.scatter = args.scatter
     Constants.max_n_points = args.max_n_points
     Constants.noncritical_delay = args.noncritical_delay
+    Constants.critical_delay = args.critical_delay
+    Constants.skip_experiment = args.skip_experiment
 
     if args.log == "DEBUG":
         Constants.log = logging.DEBUG
