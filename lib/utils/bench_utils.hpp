@@ -10,6 +10,8 @@
 #include <atomic>
 #include <chrono>
 #include <vector>
+#include <queue>
+#include <semaphore>
 
 // asm fence
 #if defined(__x86_64)
@@ -40,6 +42,25 @@ struct run_stats {
     int num_threads;
     struct per_thread_stats **thread_stats;
     struct rusage usage;
+};
+
+// class waiter{
+//     public:
+        // waiter* next;
+// }
+
+class sleeperScheduler{
+    public:
+        void init(size_t num_threads);
+
+        void sleep(size_t thread_id);
+        void awake(size_t thread_id);
+
+    private:
+        std::queue<size_t> threads = {};
+        std::mutex waiter_lock;
+        std::binary_semaphore* waiters;
+        int waiterSize=0;
 };
 
 

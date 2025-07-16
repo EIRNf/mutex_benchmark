@@ -16,6 +16,8 @@ public:
 
     void lock(size_t thread_id) override {
         // TODO refactor and remove goto
+        int i=0;
+
         unlocking[thread_id] = false;
     try_again:
         c[thread_id] = true;

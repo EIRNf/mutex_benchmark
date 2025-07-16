@@ -13,11 +13,11 @@
 #include "bench_utils.hpp"
 #include "lock.hpp"
 
-#include "pthread_lock.cpp"
 #include "cpp_std_mutex.cpp"
 #include "boost_lock.cpp"
 #include "dijkstra_lock.cpp"
 #include "dijkstra_nonatomic_lock.cpp"
+#include "dijkstra_nonatomic_sleeper_lock.cpp"
 #include "spin_lock.cpp"
 #include "exp_spin_lock.cpp"
 #include "nsync_lock.cpp"
@@ -30,6 +30,13 @@
 #include "knuth_lock.cpp"
 #include "peterson_lock.cpp"
 #include "boulangerie.cpp"
+#include "wait_spin_lock.cpp"
+#include "lamport_sleeper_lock.cpp"
+#include "system_lock.cpp"
+#include "mcs_sleeper_lock.cpp"
+#include "knuth_sleeper_lock.cpp"
+#include "yang_lock.cpp"
+#include "yang_sleeper_lock.cpp"
 #include "szymanski.cpp"
 
 int min_contention_bench(
@@ -168,24 +175,31 @@ int main(int argc, char* argv[]) {
     }
 
     SoftwareMutex* lock = nullptr;
-    if      (strcmp(mutex_name, "pthread") == 0)            lock = new Pthread();
-    else if (strcmp(mutex_name, "cpp_std") == 0)            lock = new CPPMutex();
-    else if (strcmp(mutex_name, "boost") == 0)              lock = new BoostMutex();
-    else if (strcmp(mutex_name, "dijkstra") == 0)           lock = new DijkstraMutex();
-    else if (strcmp(mutex_name, "dijkstra_nonatomic") == 0) lock = new DijkstraNonatomicMutex();
-    else if (strcmp(mutex_name, "spin") == 0)               lock = new SpinLock();
-    else if (strcmp(mutex_name, "exp_spin") == 0)           lock = new ExponentialSpinLock();
-    else if (strcmp(mutex_name, "nsync") == 0)              lock = new NSync();
-    else if (strcmp(mutex_name, "bakery") == 0)             lock = new BakeryMutex();
-    else if (strcmp(mutex_name, "bakery_nonatomic") == 0)   lock = new BakeryNonAtomicMutex();
-    else if (strcmp(mutex_name, "lamport") == 0)            lock = new LamportLock();
-    else if (strcmp(mutex_name, "mcs") == 0)                lock = new MCSMutex();
-    else if (strcmp(mutex_name, "mcs_volatile") == 0)       lock = new MCSVolatileMutex();
-    else if (strcmp(mutex_name, "mcs_malloc") == 0)         lock = new MCSMallocMutex();
-    else if (strcmp(mutex_name, "knuth") == 0)              lock = new KnuthMutex();
-    else if (strcmp(mutex_name, "peterson") == 0)           lock = new PetersonMutex();
-    else if (strcmp(mutex_name, "boulangerie") == 0)        lock = new Boulangerie();
-    else if (strcmp(mutex_name, "szymanski") == 0)          lock = new SzymanskiLock();
+    if      (strcmp(mutex_name, "system") == 0)                     lock = new System();
+    else if (strcmp(mutex_name, "cpp_std") == 0)                    lock = new CPPMutex();
+    else if (strcmp(mutex_name, "boost") == 0)                      lock = new BoostMutex();
+    else if (strcmp(mutex_name, "dijkstra") == 0)                   lock = new DijkstraMutex();
+    else if (strcmp(mutex_name, "dijkstra_nonatomic") == 0)         lock = new DijkstraNonatomicMutex();
+    else if (strcmp(mutex_name, "dijkstra_nonatomic_sleeper") == 0) lock = new DijkstraNonatomicSleeperMutex();
+    else if (strcmp(mutex_name, "spin") == 0)                       lock = new SpinLock();
+    else if (strcmp(mutex_name, "exp_spin") == 0)                   lock = new ExponentialSpinLock();
+    else if (strcmp(mutex_name, "wait_spin") == 0)                  lock = new ExponentialSpinLock();
+    else if (strcmp(mutex_name, "nsync") == 0)                      lock = new NSync();
+    else if (strcmp(mutex_name, "bakery") == 0)                     lock = new BakeryMutex();
+    else if (strcmp(mutex_name, "bakery_nonatomic") == 0)           lock = new BakeryNonAtomicMutex();
+    else if (strcmp(mutex_name, "lamport") == 0)                    lock = new LamportLock();
+    else if (strcmp(mutex_name, "lamport_sleeper") == 0)            lock = new LamportSleeperLock();
+    else if (strcmp(mutex_name, "mcs") == 0)                        lock = new MCSMutex();
+    else if (strcmp(mutex_name, "mcs_volatile") == 0)               lock = new MCSVolatileMutex();
+    else if (strcmp(mutex_name, "mcs_malloc") == 0)                 lock = new MCSMallocMutex();
+    else if (strcmp(mutex_name, "mcs_sleeper") == 0)                lock = new MCSSleeperMutex();
+    else if (strcmp(mutex_name, "knuth") == 0)                      lock = new KnuthMutex();
+    else if (strcmp(mutex_name, "knuth_sleeper") == 0)              lock = new KnuthSleeperMutex(); //does not work as of 7/14/25
+    else if (strcmp(mutex_name, "peterson") == 0)                   lock = new PetersonMutex();
+    else if (strcmp(mutex_name, "boulangerie") == 0)                lock = new Boulangerie();
+    else if (strcmp(mutex_name, "szymanski") == 0)                  lock = new SzymanskiLock();
+    else if (strcmp(mutex_name, "yang") == 0)                       lock = new YangMutex();
+    else if (strcmp(mutex_name, "yang_sleeper") == 0)               lock = new YangSleeperMutex();
     else {
         fprintf(stderr,
             "Unrecognized mutex '%s'\n", mutex_name

@@ -4,13 +4,15 @@ import logging
 
 class Constants:
     class Defaults:
+
         MUTEX_NAMES          = [
-            "dijkstra", "bakery", "spin", "exp_spin", "nsync", "pthread",
-            "mcs", "knuth", "peterson", "lamport", "boulangerie", "szymanski"
+            "dijkstra_nonatomic", "dijkstra_nonatomic_sleeper", "bakery_nonatomic", "exp_spin", "wait_spin", "nsync", "system",
+            "mcs", "mcs_sleeper", "knuth", "peterson", "lamport", "lamport_sleeper", "boulangerie", "szymanski"
         ]
         EXECUTABLE_NAME      = "max_contention_bench"
         BENCH_N_THREADS      = "10"
         BENCH_N_SECONDS      = "1"
+
         N_PROGRAM_ITERATIONS = 10
         DATA_FOLDER          = "./data/generated"
         LOGS_FOLDER          = "./data/logs"

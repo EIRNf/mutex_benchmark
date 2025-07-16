@@ -3,7 +3,7 @@
 #include <iostream>
 
 
-class LamportLock : public virtual SoftwareMutex {
+class LamportSleeperLock : public virtual SoftwareMutex {
 public:
     void init(size_t num_threads) override {
         this->x = (volatile size_t*)malloc(sizeof(size_t));;
@@ -20,7 +20,7 @@ public:
 
         if (*y!=0){
             b[thread_id] = false; //no longer going for the lock
-            while (*y!=0){} //wait for whoever was trying to get it to get it
+            while (*y!=0){sleep();} //wait for whoever was trying to get it to get it
             goto start; //restart
         }
 
@@ -32,7 +32,7 @@ public:
             for (int j=0; j<num_threads; j++){while(b[j]){}} //wait for contention to go down
             Fence();
             if (*y!=thread_id+1){ //while waiting, someone messed with second confirmation
-                while(*y!=0){} //wait for the person to unlock
+                while(*y!=0){sleep();} //wait for the person to unlock
                 goto start;
             }
         }
@@ -40,8 +40,10 @@ public:
     
     void unlock(size_t thread_id) override {
         *y=0;
-        // Fence();
+        Fence();
         b[thread_id] = false;
+
+        wake();
     }
 
     void destroy() override {
