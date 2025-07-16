@@ -18,7 +18,7 @@ public:
         // struct timespec nanosleep_timespec = { 0, 10 };
         // Get "bakery number"
         choosing[thread_id] = true;
-        size_t my_bakery_number;
+        size_t my_bakery_number = 1;
         for (size_t i = 0; i < num_threads; i++) {
             if (number[i] + 1 > my_bakery_number) {
                 my_bakery_number = number[i] + 1;

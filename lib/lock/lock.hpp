@@ -6,6 +6,7 @@
 #include <atomic>
 #include <thread>
 #include <vector>
+#include <sched.h>
 
 class SoftwareMutex {
 public:
@@ -25,6 +26,35 @@ public:
     virtual void destroy() = 0;
 
     virtual std::string name() =0;
+
+    inline void spin_delay_sched_yield() {
+        sched_yield();
+    }
+
+    inline void spin_delay_exponential() {
+        // Same as nsync
+        static size_t attempts = 0;
+        if (attempts < 7) {
+            volatile int i;
+            for (i = 0; i != 1 << attempts; i++);
+        } else {
+            std::this_thread::yield();
+        }
+        attempts++;
+    }
+
+    inline void spin_delay_linear() {
+        static size_t delay = 5;
+        volatile size_t i;
+        for (i = 0; i != delay; i++);
+        delay += 5;
+    }
+
+    inline void spin_delay_exponential_nanosleep() {
+        static struct timespec nanosleep_timespec = { 0, 10 }, remaining;
+        nanosleep(&nanosleep_timespec, &remaining);
+        nanosleep_timespec.tv_nsec *= 2;
+    }
 };
 
 #endif // LOCK_LOCK_HPP

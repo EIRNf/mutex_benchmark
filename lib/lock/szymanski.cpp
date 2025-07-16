@@ -76,7 +76,7 @@ public:
     }
 
     std::string name() override {
-        return "Szymanski";
+        return "szymanski";
     }
 
     void destroy() override {

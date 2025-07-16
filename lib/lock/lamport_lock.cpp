@@ -29,7 +29,7 @@ public:
 
         if (*x!=thread_id+1){ //someone started going for the lock
             b[thread_id] = false; //not longer going for the lock
-            for (int j=0; j<num_threads; j++){while(b[j]){}} //wait for contention to go down
+            for (size_t j=0; j<num_threads; j++){while(b[j]){}} //wait for contention to go down
             std::atomic_thread_fence(std::memory_order_seq_cst);
             if (*y!=thread_id+1){ //while waiting, someone messed with second confirmation
                 while(*y!=0){} //wait for the person to unlock

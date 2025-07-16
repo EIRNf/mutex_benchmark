@@ -10,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <vector>
+#include "../lock/lock.hpp"
 
 // asm fence
 #if defined(__x86_64)
@@ -27,12 +28,11 @@ struct per_thread_stats {
     int thread_id;
     int num_iterations;
 
-    std::chrono::nanoseconds run_time;
+    double run_time;
     struct timespec start_time;
     struct timespec end_time;
     // Vector reallocation could waste some thread time.
     std::vector<double> lock_times;
-
 };
 
 
@@ -60,5 +60,9 @@ void destroy_lock_timer(struct per_thread_stats *stats);
 void report_run_latency(struct run_stats *stats);
 
 void report_thread_latency(struct per_thread_stats *stats, bool csv, bool thread_level);
+
+void busy_sleep(size_t iterations);
+SoftwareMutex *get_mutex(const char *mutex_name, size_t num_threads);
+void cleanup_mutex(SoftwareMutex *mutex);
 
 #endif // __BENCH_UTILS_HPP_

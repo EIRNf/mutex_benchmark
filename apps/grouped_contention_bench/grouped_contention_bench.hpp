@@ -19,6 +19,6 @@ struct run_args {
     struct rusage usage;
 };
 
-void schedule_flags(std::shared_ptr<std::atomic<bool>*> start_flags, std::shared_ptr<std::atomic<bool>*> end_flags, std::chrono::nanoseconds run_time, int num_groups);
+void schedule_flags(std::shared_ptr<std::atomic<bool>*> start_flags, std::shared_ptr<std::atomic<bool>*> end_flags, double run_time, int num_groups);
 
-int grouped_contention_bench(int num_threads, std::chrono::nanoseconds run_time, int num_groups, bool csv, SoftwareMutex* lock);
+int grouped_contention_bench(int num_threads, double run_time, int num_groups, bool csv, SoftwareMutex* lock);
