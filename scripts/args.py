@@ -26,7 +26,8 @@ def init_args():
                      help='measure per-lock/unlock latency')
     exp.add_argument('--iter-v-threads', nargs=3, type=int, metavar=('START','END','STEP'),
                      help='sweep iterations over a range of thread counts')
-    
+
+    parser.add_argument('--lru', nargs=1, type=int, metavar=('KEYS'), help='number of keys in the lru workload')
     
     parser.add_argument('-r', '--rusage', action='store_true', help = 'record CPU usage instead of time/# iterations')
 
@@ -108,6 +109,8 @@ def init_args():
     Constants.scatter           = args.scatter
     Constants.max_n_points      = args.max_n_points
 
+    Constants.keys = args.lru[0]
+
     Constants.scatter = args.scatter
     Constants.bench = args.bench
     Constants.groups = args.groups
@@ -118,6 +121,8 @@ def init_args():
         Constants.executable = "./build/apps/grouped_contention_bench/grouped_contention_bench"
     elif (args.bench=='min'):
         Constants.executable = "./build/apps/min_contention_bench/min_contention_bench"
+    elif (args.bench=='lru'):
+        Constants.executable = "./build/apps/lru_workload_bench/lru_workload_bench"
     
     Constants.max_n_points = args.max_n_points
 

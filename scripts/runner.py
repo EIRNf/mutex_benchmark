@@ -26,8 +26,11 @@ def get_command(mutex_name, threads, *, csv=True, thread_level=False, rusage=Fal
         cmd = [Constants.executable,
             mutex_name,
             str(threads),
-            str(Constants.bench_n_seconds),
-            str(Constants.groups)]
+            str(Constants.bench_n_seconds)]
+    if Constants.bench == "grouped":
+        cmd.append(str(Constants.groups))
+    if Constants.bench=='lru':
+        cmd.append(str(Constants.keys))
     if csv:
         cmd.append("--csv")
     if thread_level:
@@ -42,6 +45,7 @@ def get_command(mutex_name, threads, *, csv=True, thread_level=False, rusage=Fal
             cmd += ["--stagger-ms", str(Constants.stagger_ms)]
 
     logger.debug(f"Bench command: {cmd}")
+    print(cmd)
     return cmd
 
 

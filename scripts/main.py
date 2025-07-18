@@ -72,7 +72,7 @@ def main():
     setup()
     init_logger()
     build()
-    if Constants.bench == 'max' or Constants.bench=='min':
+    if Constants.bench == 'max' or Constants.bench=='min' or Constants.bench =='lru':
         if Constants.thread_level:
             run_experiment_thread_level()
         elif Constants.iter_v_threads:
