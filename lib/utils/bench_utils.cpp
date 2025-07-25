@@ -52,6 +52,9 @@
 #include "../lock/yang_lock.cpp"
 #include "../lock/yang_sleeper_lock.cpp"
 #include "../lock/hardspin_lock.hpp"
+#include "../lock/cohortTicket_lock.cpp"
+#include "../lock/cohortMCS_lock.cpp"
+#include "../lock/hbo_lock.cpp"
 
 void record_rusage(bool csv) {
     struct rusage usage;
@@ -206,6 +209,10 @@ SoftwareMutex *get_mutex(const char *mutex_name, size_t num_threads) {
     else if (strcmp(mutex_name, "elevator") == 0)                    lock = new ElevatorMutex();
     else if (strcmp(mutex_name, "yang") == 0)                        lock = new YangMutex();
     else if (strcmp(mutex_name, "yang_sleeper") == 0)                lock = new YangSleeperMutex();
+    else if (strcmp(mutex_name, "cohortMCS") == 0)                   lock = new CMCSLock();
+    else if (strcmp(mutex_name, "hbo") == 0)                         lock = new hbo_lock();
+    else if (strcmp(mutex_name, "cohortTicket") == 0)                lock = new CohortTicket();
+
     // else if (strcmp(mutex_name, "hopscotch_static") == 0) {
     //     // This causes a free / delete / delete[] mismatch
     //     size_t region_size = HopscotchStaticMutex::get_size(num_threads);
