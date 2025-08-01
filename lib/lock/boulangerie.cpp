@@ -1,14 +1,18 @@
+#include "../utils/cxl_utils.hpp"
+
 #include "lock.hpp"
 #include <stdexcept>
-
 
 class Boulangerie : public virtual SoftwareMutex {
 public:
     std::string name() override { return "boulangerie"; }
     void init(size_t num_threads) override {
+        size_t _cxl_region_size = (sizeof(volatile bool) + sizeof(volatile int)) * num_threads;
+        this->_cxl_region = (volatile char*)ALLOCATE(_cxl_region_size);
         this->num_threads = num_threads;
-        this->choosing = (volatile bool*)malloc(num_threads * sizeof(volatile bool));
-        this->number = (volatile int*)malloc(num_threads * sizeof(volatile int));
+        this->number = (volatile int*)&this->_cxl_region[0];
+        size_t offset = sizeof(volatile int) * num_threads;
+        this->choosing = (volatile bool*)&this->_cxl_region[offset];
         for (size_t i = 0; i < num_threads; i++) {
             choosing[i] = 0;
             number[i] = 0;
@@ -17,7 +21,7 @@ public:
 
     void lock(size_t thread_id) override {
         choosing[thread_id] = 1;
-        std::atomic_thread_fence(std::memory_order_seq_cst);
+        FENCE();
         int max_number = 0;
         for (size_t i = 0; i < num_threads; ++i) {
             if (number[i] > max_number) {
@@ -25,9 +29,9 @@ public:
             }
         }
         number[thread_id] = max_number + 1;
-        std::atomic_thread_fence(std::memory_order_seq_cst);
+        FENCE();
         choosing[thread_id] = 0;
-        std::atomic_thread_fence(std::memory_order_seq_cst);
+        FENCE();
         
         //limit the number of thread to check
         size_t limit;
@@ -45,7 +49,7 @@ public:
                     curr_j = number[j];
             }
         }
-        std::atomic_thread_fence(std::memory_order_seq_cst);
+        FENCE();
     }
 
     void unlock(size_t thread_id) override {
@@ -53,12 +57,13 @@ public:
     }
 
     void destroy() override {
-        free((void *)choosing);
-        free((void *)number);
+        size_t _cxl_region_size = (sizeof(volatile bool) + sizeof(volatile int)) * this->num_threads;
+        FREE((void*)this->_cxl_region, _cxl_region_size);
     }
 
 
 private:
+    volatile char *_cxl_region;
     size_t num_threads;
     volatile bool *choosing;
     volatile int *number;

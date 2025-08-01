@@ -2,6 +2,11 @@
 #include <string.h> 
 #include <stdio.h>
 #include "bench_utils.hpp"
+#include "cxl_utils.hpp"
+#include "memory.h"
+#include "stdio.h"
+#include <string>
+#include <stdlib.h>
 
 #include "lock.hpp"
 
@@ -153,12 +158,16 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    cxl_mutex_benchmark_init();
 
     SoftwareMutex *lock = get_mutex(mutex_name, num_threads);
     if (lock == nullptr) {
-
-        return 1;
+        fprintf(stderr, "Failed to initialize lock.\n");
     }
 
-    return grouped_contention_bench(num_threads, run_time, num_groups, csv, rusage, lock);
+    int result = grouped_contention_bench(num_threads, run_time, num_groups, csv, rusage, lock);
+
+    cxl_mutex_benchmark_exit();
+    
+    return result;
 }

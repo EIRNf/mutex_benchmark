@@ -9,7 +9,7 @@
 #include <time.h>
 #include <stdexcept>
 
-class HardSpinLock : public virtual TryLock {
+class HardSpinLock : public virtual SpinLock {
 public:
     void init(size_t num_threads) override {
         (void)num_threads; // This parameter is not used
@@ -24,7 +24,7 @@ public:
         }
     }
 
-    bool trylock(size_t thread_id) override {
+    bool trylock(size_t thread_id) {
         (void)thread_id;
 
         return !lock_.test_and_set(std::memory_order_acquire);

@@ -12,6 +12,8 @@
 
 #include "max_contention_bench.hpp"
 #include "bench_utils.hpp"
+#include "cxl_utils.hpp"
+#include "lock.hpp"
 
 int max_contention_bench(
     int num_threads, 
@@ -223,14 +225,15 @@ int main(int argc, char* argv[]) {
         max_critical_delay = 1;
     }
 
+    cxl_mutex_benchmark_init();
+
     SoftwareMutex *lock = get_mutex(mutex_name, num_threads);
     if (lock == nullptr) {
-
+        fprintf(stderr, "Failed to initialize lock.\n");
         return 1;
-
     }
 
-    return max_contention_bench(
+    int result = max_contention_bench(
         num_threads,
         run_time_sec,
         csv,
@@ -243,4 +246,8 @@ int main(int argc, char* argv[]) {
         stagger_ms,
         lock
     );
+
+    cxl_mutex_benchmark_exit();
+    
+    return result;
 }

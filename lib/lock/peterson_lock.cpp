@@ -4,8 +4,8 @@
 class PetersonMutex : public virtual SoftwareMutex {
 public:
     void init(size_t num_threads) override {
-        this->level         = (volatile std::atomic<int   >*)malloc(sizeof(volatile std::atomic<int   >) * num_threads);
-        this->last_to_enter = (volatile std::atomic<size_t>*)malloc(sizeof(volatile std::atomic<size_t>) * num_threads); // Does not need initialization.
+        this->level         = (volatile std::atomic<int   >*)ALLOCATE(sizeof(volatile std::atomic<int   >) * num_threads);
+        this->last_to_enter = (volatile std::atomic<size_t>*)ALLOCATE(sizeof(volatile std::atomic<size_t>) * num_threads); // Does not need initialization.
         for (size_t i = 0; i < num_threads; i++) {
             this->level[i] = -1;
         }
@@ -42,8 +42,8 @@ public:
     }
 
     void destroy() override {
-        free((void*)level);
-        free((void*)last_to_enter);
+        FREE((void*)level, sizeof(volatile std::atomic<int>) * num_threads);
+        FREE((void*)last_to_enter, sizeof(volatile std::atomic<size_t>) * num_threads);
     }
 
     std::string name() override {

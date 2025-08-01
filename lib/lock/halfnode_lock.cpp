@@ -1,3 +1,5 @@
+// Deprecated
+
 #include "lock.hpp"
 #include <stdexcept>
 #include <atomic>

@@ -21,9 +21,3 @@ def init_logger():
     formatter = logging.Formatter('%(levelname)s:  %(message)s')
     handler.setFormatter(formatter)
     logger.addHandler(handler)
-
-
-def log(output):
-
-    with open(log_file_name, "w") as log_file:
-        log_file.write(output)

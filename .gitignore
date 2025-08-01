@@ -4,7 +4,9 @@ env/*
 .vscode
 .DS_Store
 subprojects/nsync
-data/*
+data/generated/*
+data/logs/*
+data/figs/*
 .env/
 
 perf.data

@@ -1,4 +1,5 @@
 #include "lock.hpp"
+#include "../utils/cxl_utils.hpp"
 #include <stdexcept>
 #include <atomic>
 #include <cstring>
@@ -10,10 +11,14 @@
 class KnuthMutex : public virtual SoftwareMutex {
 public:
     void init(size_t num_threads) override {
-        size_t control_array_size = sizeof(volatile std::atomic_int) * num_threads;
-        this->control = (volatile std::atomic_int*)malloc(control_array_size);
-        memset((void*)control, 0, control_array_size);
-        this->k = 0;
+        _cxl_region_size = sizeof(std::atomic_int) * (num_threads + 1);
+        _cxl_region = (volatile char*)ALLOCATE(_cxl_region_size);
+
+        this->k = (std::atomic_int*)&_cxl_region[0];
+        this->control = (volatile std::atomic_int*)&_cxl_region[sizeof(std::atomic_int)];
+
+        memset((void*)control, 0, sizeof(std::atomic_int) * num_threads);
+        *this->k = 0;
         this->num_threads = num_threads;
     }
 
@@ -26,7 +31,7 @@ public:
     beginning:
         control[thread_id] = LOOPING;
     restart_loop:
-        for (ssize_t j = k; j >= 0; j--) {
+        for (ssize_t j = *k; j >= 0; j--) {
             if (j == thread_id) {
                 goto end_of_loop;
             }
@@ -49,20 +54,20 @@ public:
                 goto beginning;
             }
         }
-        k = thread_id;
+        *k = thread_id;
     }
 
     void unlock(size_t thread_id) override {
         if (thread_id == 0) {
-            k = num_threads - 1;
+            *k = num_threads - 1;
         } else {
-            k = thread_id - 1;
+            *k = thread_id - 1;
         }
         control[thread_id] = NOT_IN_CONTENTION;
     }
 
     void destroy() override {
-        free((void*)control);
+        FREE((void*)_cxl_region, _cxl_region_size);
     }
 
     std::string name() override {
@@ -70,7 +75,9 @@ public:
     }
 
 private:
+    volatile char *_cxl_region;
     volatile std::atomic_int *control;
-    volatile std::atomic_int k;
+    volatile std::atomic_int *k;
     size_t num_threads;
+    size_t _cxl_region_size;
 };

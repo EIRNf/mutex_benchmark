@@ -1,12 +1,19 @@
 #include "lock.hpp"
 #include <stdexcept>
 #include "../utils/bench_utils.hpp"
+#include "../utils/cxl_utils.hpp"
 
 class BakeryNonAtomicMutex : public virtual SoftwareMutex {
 public:
     void init(size_t num_threads) override {
-        this->choosing = (volatile bool*)malloc(sizeof(bool) * num_threads);
-        this->number = (volatile size_t*)malloc(sizeof(size_t) * num_threads);
+        size_t number_size = sizeof(size_t) * num_threads;
+        size_t choosing_size = sizeof(bool) * num_threads;
+        _cxl_region_size = number_size + choosing_size;
+        _cxl_region = (volatile char*)ALLOCATE(_cxl_region_size);
+
+        this->number = (volatile size_t*)&_cxl_region[0];
+        this->choosing = (volatile bool*)&_cxl_region[number_size];
+
         for (size_t i = 0; i < num_threads; i++) {
             choosing[i] = false;
             number[i] = 0;
@@ -50,8 +57,7 @@ public:
         number[thread_id] = 0;
     }
     void destroy() override {
-        free((void*)choosing);
-        free((void*)number);
+        FREE((void*)_cxl_region, _cxl_region_size);
     }
 
     std::string name() override {
@@ -59,10 +65,12 @@ public:
     }
 
 private:
+    volatile char *_cxl_region;
     volatile bool *choosing;
     // Note: Mutex will fail if this number overflows,
     // which happens if the "bakery" remains full for
     // a long time.
     volatile size_t *number;
     size_t num_threads;
+    size_t _cxl_region_size;
 };

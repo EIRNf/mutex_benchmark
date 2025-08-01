@@ -1,3 +1,4 @@
+#ifdef inc_futex
 #include "lock.hpp"
 #include <atomic>
 #include <time.h>
@@ -71,3 +72,4 @@ private:
     std::atomic<uint32_t> state;
     struct timespec timeout = { 0, 10000000 };
 };
+#endif

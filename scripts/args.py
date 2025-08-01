@@ -40,14 +40,14 @@ def init_args():
                         default=Constants.logs_folder,
                         help='where to write debug logs')
 
-    mnames = parser.add_mutually_exclusive_group(required=True)
-    mnames.add_argument('-i','--include', nargs='+',
+    # mnames = parser.add_mutually_exclusive_group(required=True)
+    parser.add_argument('-i','--include', nargs='+',
                         help='only these mutex names')
-    mnames.add_argument('-x','--exclude', nargs='+',
+    parser.add_argument('-x','--exclude', nargs='+',
                         help='all except these names')
-    mnames.add_argument('-a','--all', action='store_true',
+    parser.add_argument('-a','--all', action='store_true',
                         help='run all default mutexes')
-    mnames.add_argument('-s', '--set', nargs='+',
+    parser.add_argument('-s', '--set', nargs='+',
                         help='run specific mutex sets')
 
     parser.add_argument('--scatter', action='store_true',
@@ -70,6 +70,8 @@ def init_args():
     parser.add_argument('--skip-experiment', action='store_true', default=False,
                         help="use previous data files instead of rerunning experiment (only works if exact same experiment was just run)")
 
+    parser.add_argument('--cxl', action='store_true',
+                        help='compile with emucxl allocation for cxl machine/hardware')
 
     logg = parser.add_mutually_exclusive_group()
     logg.add_argument('-d','--debug',    action='store_const', dest='log', const='DEBUG',
@@ -84,11 +86,15 @@ def init_args():
                       help='set log level to CRITICAL')
 
     parser.add_argument('--groups', type=int)
+    parser.add_argument('--averages', action="store_true")
+    parser.add_argument('--stdev', type=float, default=Constants.Defaults.STANDARD_DEVIATION_SCALE)
 
     parser.add_argument('--bench', type=str, default='max')
+    parser.add_argument('--skip-plotting', action='store_true')
 
     args = parser.parse_args()
 
+    Constants.mutex_names = []
     if args.all:
         Constants.mutex_names = Constants.Defaults.MUTEX_NAMES
     elif args.set:
@@ -101,7 +107,6 @@ def init_args():
             Constants.mutex_names.extend(Constants.Defaults.FENCING_SET)
         if ('base' in args.set):
             Constants.mutex_names.extend(Constants.Defaults.BASE_SET)
-
     elif args.include:
         Constants.mutex_names = args.include
     else:  
@@ -109,29 +114,54 @@ def init_args():
             n for n in Constants.Defaults.MUTEX_NAMES
             if n not in args.exclude
         ]
+    
+    if args.exclude:
+        for excluded_mutex_name in args.exclude:
+            if excluded_mutex_name in Constants.mutex_names:
+                Constants.mutex_names.remove(excluded_mutex_name)
+    
+    if args.include:
+        for included_mutex_name in args.include:
+            if included_mutex_name not in Constants.mutex_names:
+                Constants.mutex_names.append(included_mutex_name)
 
     Constants.bench_n_threads      = args.threads
     Constants.bench_n_seconds      = args.seconds
     Constants.n_program_iterations = args.program_iterations
-    print(f"Program Iterations: {Constants.n_program_iterations}")
+    Constants.averages = args.averages
     # Constants.threads_start = args.threads_start
-    # Constants.threads_end = args.threads_end
+    # Constants.threads_end = args.threads_endf
     # Constants.threads_step = args.threads_step
-    Constants.iter_threads = args.iter_threads
-    Constants.iter_noncritical_delay = args.iter_noncritical_delay
     Constants.rusage = args.rusage
-    Constants.iter_critical_delay = args.iter_critical_delay
-    Constants.iter = args.iter_threads is not None or args.iter_noncritical_delay is not None or args.iter_critical_delay is not None
+
+    if args.iter_threads != None:
+        Constants.iter_variable_name = "threads"
+        Constants.iter_range = args.iter_threads
+        Constants.iter = True
+    elif args.iter_critical_delay != None:
+        Constants.iter_variable_name = "critical_delay"
+        Constants.iter_range = args.iter_critical_delay
+        Constants.iter = True
+    elif args.iter_noncritical_delay != None:
+        Constants.iter_variable_name = "noncritical_delay"
+        Constants.iter_range = args.iter_noncritical_delay
+        Constants.iter = True
+    else:
+        Constants.iter = False
+        
+    if Constants.iter:
+        Constants.iter_range[1] += 1 # End inclusive range
 
     Constants.data_folder = args.data_folder
     logger.debug(Constants.data_folder)
     Constants.logs_folder = args.log_folder
     Constants.executable = Constants.Defaults.EXECUTABLE
     Constants.multithreaded = args.multithreaded
-    Constants.thread_level = args.thread_level
+    Constants.thread_level = args.thread_level or Constants.iter
     Constants.scatter = args.scatter
     Constants.bench = args.bench
     Constants.groups = args.groups
+    Constants.stdev_scale = args.stdev
 
     if (args.bench=='max'):
         Constants.executable = "./build/apps/max_contention_bench/max_contention_bench"
@@ -150,6 +180,12 @@ def init_args():
 
     Constants.low_contention = args.low_contention
     Constants.stagger_ms     = args.stagger_ms
+    Constants.skip_plotting = args.skip_plotting
+    Constants.cxl = args.cxl
+
+    # if Constants.cxl:
+    #     for mutex_name in Constants.mutex_names:
+    #         assert mutex_name in Constants.Defaults.CXL_MUTEXES, "expected only mutexes that work on cxl"
 
     level = getattr(logging, args.log.upper(), Constants.Defaults.LOG)
     Constants.log = level

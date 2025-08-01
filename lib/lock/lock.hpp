@@ -9,6 +9,7 @@
 #include <vector>
 #include <sched.h>
 #include <sanitizer/tsan_interface.h>
+#include <semaphore>
 
 #if defined(__has_feature)
 #  if __has_feature(thread_sanitizer)
@@ -93,9 +94,7 @@ public:
     }
 
     std::binary_semaphore sleeper{0};
-
     virtual std::string name() =0;
-
 
     inline void spin_delay_sched_yield() {
         sched_yield();
@@ -118,12 +117,6 @@ public:
         volatile size_t i;
         for (i = 0; i != delay; i+=1);
         delay += 5;
-    }
-
-    inline void spin_delay_exponential_nanosleep() {
-        static struct timespec nanosleep_timespec = { 0, 10 }, remaining;
-        nanosleep(&nanosleep_timespec, &remaining);
-        nanosleep_timespec.tv_nsec *= 2;
     }
 
 private:

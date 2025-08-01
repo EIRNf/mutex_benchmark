@@ -1,3 +1,4 @@
+#ifdef inc_boost
 #include "lock.hpp"
 #include <boost/thread/mutex.hpp>
 #include <stdexcept>
@@ -23,3 +24,4 @@ public:
 private:
     boost::mutex mutex_;
 };
+#endif

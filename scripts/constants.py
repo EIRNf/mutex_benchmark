@@ -109,6 +109,39 @@ class Constants:
 
 
 
+
+        # note: CLH technically works but it makes one allocation per
+        # lock operation, so it is too slow.
+        # peterson is also probaby really really slow
+        CXL_MUTEXES = [
+            "bakery",
+            "bakery_nonatomic",
+            "boulangerie",
+            "burns_lamport",
+            "dijkstra",
+            "dijkstra_nonatomic",
+            "spin",
+            "exp_spin",
+            "hopscotch",
+            "knuth",
+            "lamport",
+            "linear_cas_elevator",
+            "linear_bl_elevator",
+            "tree_cas_elevator",
+            "tree_bl_elevator",
+            "mcs",
+            "peterson",
+            "szymanski",
+            "ticket",
+        ]
+
+        CONDITIONAL_COMPILATION_MUTEXES = [
+            "nsync",
+            "boost",
+            "umwait",
+            "futex",
+        ]
+
         EXECUTABLE_NAME = "max_contention_bench"
         BENCH_N_THREADS = 10
         BENCH_N_SECONDS = 1
@@ -124,6 +157,7 @@ class Constants:
         SKIP                 = 1
         MAX_N_POINTS         = 1000
         LOG_SCALE            = True
+        STANDARD_DEVIATION_SCALE = 1.0
 
         LOW_CONTENTION = False
         STAGGER_MS     = 0
@@ -145,6 +179,11 @@ class Constants:
     bench: str           = Defaults.BENCH
     iter: bool
     rusage: bool
+    cxl: bool
+    skip_plotting: bool
+    averages: bool
+    iter_variable_name: str
+    stdev_scale: float
 
     noncritical_delay: int
     groups: int
@@ -153,8 +192,4 @@ class Constants:
     low_contention = Defaults.LOW_CONTENTION
     stagger_ms     = Defaults.STAGGER_MS
     skip_experiment: bool = False
-
-    iter_threads: list[int] | None
-    iter_critical_delay: list[int] | None
-    iter_noncritical_delay: list[int] | None
-
+    iter_range: list[int]

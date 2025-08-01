@@ -4,7 +4,6 @@ from .constants import Constants
 from .logger    import logger
 import subprocess
 
-
 def get_data_file_name(mutex_name, i, **kwargs):
     name_root = f"{Constants.data_folder}/{mutex_name}-{i}"
     for name, value in kwargs.items():
@@ -25,6 +24,8 @@ def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, criti
         str(threads), 
         str(Constants.bench_n_seconds), 
     ]
+    if Constants.cxl:
+        cmd.insert(0, "sudo")
     if Constants.groups:
         cmd.append(str(Constants.groups))
     if critical_delay != -1:
@@ -46,43 +47,6 @@ def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, criti
     logger.debug(f"Bench command: {cmd}")
     return cmd
 
-# def run_experiment_multi_threaded():
-#     for mutex_name in Constants.mutex_names:
-#         procs = []
-#         for i in range(Constants.n_program_iterations):
-#             fname = get_data_file_name(mutex_name, i, Constants.bench_n_threads)
-#             subprocess.run(["rm", "-f", fname])
-#             p = subprocess.Popen(
-#                 get_command(
-#                     mutex_name,
-#                     Constants.bench_n_threads,
-#                     csv=True,
-#                     thread_level=True
-#                 ),
-#                 stdout=subprocess.PIPE
-#             )
-#             procs.append((fname, p))
-
-#         for fname, p in procs:
-#             p.wait()
-#             output = p.stdout.read()
-#             with open(fname, "wb") as f:
-#                 f.write(output)
-
-def run_experiment_single_threaded():
-    for i in range(Constants.n_program_iterations):
-        for mutex_name in Constants.mutex_names:
-        # Create program threads
-            threads = []
-            logger.info(f"{mutex_name=} | {i=}")
-            data_file_name = get_data_file_name(mutex_name, i)
-            subprocess.run(["rm", "-f", data_file_name])
-            command = get_command(mutex_name, csv=True, thread_level=True)
-            thread = subprocess.run(command, stdout=subprocess.PIPE)
-            csv_data = thread.stdout
-            with open(data_file_name, "wb") as data_file:
-                data_file.write(csv_data)
-
 def run_experiment_lock_level_single_threaded():
     for i in range(Constants.n_program_iterations):
         for mutex_name in Constants.mutex_names:
@@ -95,49 +59,16 @@ def run_experiment_lock_level_single_threaded():
             with open(data_file_name, "wb") as data_file:
                 data_file.write(csv_data)
 
-
-# def run_experiment_iter_v_threads_single_threaded():
-#     # TODO replace with generic "run_experiment_iter_single_threaded"
-#     if Constants.iter_threads is None:
-#         raise ValueError(f"Constants.iter_threads should be list of ints.")
-    
-#     for threads in range(*Constants.iter_threads):
-#         for i in range(Constants.n_program_iterations):
-#             for mutex_name in Constants.mutex_names:
-#                 logger.info(f"{mutex_name=} | {threads=} | {i=}")
-#                 data_file_name = get_data_file_name(mutex_name, i)
-#                 subprocess.run(["rm", "-f", data_file_name])
-#                 command = get_command(mutex_name, threads=threads, csv=True, thread_level=True)
-#                 thread=subprocess.run(command, stdout=subprocess.PIPE)
-#                 csv_data = thread.stdout
-#                 with open(data_file_name, "wb") as data_file:
-#                     data_file.write(csv_data)
-
-
-def run_experiment_iter_single_threaded(iter_variable_name, iter, *, thread_level=True, rusage=False):
-    for iter_variable_value in range(*iter):
-        for i in range(Constants.n_program_iterations):
-            extra_command_args = {iter_variable_name: iter_variable_value, "rusage":rusage}
+def run_experiment_iter_single_threaded():
+    for i in range(Constants.n_program_iterations):
+        for iter_variable_value in range(*Constants.iter_range):
+            extra_command_args = {Constants.iter_variable_name: iter_variable_value, "rusage":Constants.rusage}
             for mutex_name in Constants.mutex_names:
-                logger.info(f"{mutex_name=} | {i=} | {extra_command_args=}")
+                logger.info(f"{mutex_name=:<24} | {i=:0>2} | {extra_command_args=}")
                 data_file_name = get_data_file_name(mutex_name, i, **extra_command_args)
                 subprocess.run(["rm", "-f", data_file_name])
-                command = get_command(mutex_name, csv=True, thread_level=thread_level, **extra_command_args)
+                command = get_command(mutex_name, csv=True, thread_level=Constants.thread_level, **extra_command_args)
                 thread = subprocess.run(command, stdout=subprocess.PIPE)
                 csv_data = thread.stdout
                 with open(data_file_name, "wb") as data_file:
                     data_file.write(csv_data)
-
-# def run_grouped_experiment_iter_single_threaded(iter_variable_name, iter, *, thread_level=False):
-#     for i in range(Constants.n_program_iterations):
-#         for iter_variable_value in range(*iter):
-#             extra_command_args = {iter_variable_name: iter_variable_value}
-#             for mutex_name in Constants.mutex_names:
-#                 logger.info(f"{mutex_name=} | {i=} | {extra_command_args=}")
-#                 data_file_name = get_data_file_name(mutex_name, i, **extra_command_args)
-#                 subprocess.run(["rm", "-f", data_file_name])
-#                 command = get_command(mutex_name, csv=True, thread_level=thread_level, **extra_command_args)
-#                 thread = subprocess.run(command, stdout=subprocess.PIPE)
-#                 csv_data = thread.stdout
-#                 with open(data_file_name, "wb") as data_file:
-#                     data_file.write(csv_data)

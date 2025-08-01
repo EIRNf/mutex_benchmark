@@ -1,0 +1,5 @@
+Mutex                  mcs: mean time spent: 0.000002268886 | datapoint count:      67115452
+Mutex                 spin: mean time spent: 0.000002871793 | datapoint count:      52277002
+Mutex             peterson: mean time spent: 0.000009369161 | datapoint count:      16909649
+Mutex             dijkstra: mean time spent: 0.000007009597 | datapoint count:      22102978
+Mutex            hopscotch: mean time spent: 0.000002138196 | datapoint count:      71516135

@@ -1,3 +1,4 @@
+#ifdef inc_nsync
 #include "lock.hpp"
 #include <stdexcept>
 #include "nsync_mu.h"
@@ -28,3 +29,4 @@ public:
 private:
     nsync::nsync_mu my_mutex; // Global mutex
 };
+#endif //inc_nsync

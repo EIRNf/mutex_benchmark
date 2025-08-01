@@ -1,3 +1,5 @@
+#include "../utils/cxl_utils.hpp"
+
 #include "lock.hpp"
 #include <stdexcept>
 #include <atomic>
@@ -5,7 +7,7 @@
 #include <time.h>
 #include <assert.h>
 
-// TODO: explicit memory ordering.
+// TODO: allocate once and keep using that.
 // NOTE: Because of the limitations of `thread_local`,
 // this class MUST be singleton. TODO: This is not yet explicitly enforced.
 
@@ -21,18 +23,18 @@ public:
         // The lock starts off unlocked by setting tail to a pointer
         // to some true value so that the next successor can immediately lock.
         // This means that predecessor is never a null pointer.
-        tail = (struct Node*)malloc(sizeof(struct Node*));
+        tail = (struct Node*)ALLOCATE(sizeof(struct Node*));
         tail.load()->successor_must_wait = false;
     }
 
     void lock(size_t thread_id) override {
         (void)thread_id; // Unused
 
-        node = (struct Node*)malloc(sizeof(struct Node));
+        node = (struct Node*)ALLOCATE(sizeof(struct Node));
         node->successor_must_wait = true;
         struct Node *predecessor = tail.exchange(node, std::memory_order_relaxed);
         while (predecessor->successor_must_wait);
-        free((void*)predecessor);
+        FREE((void*)predecessor, sizeof(struct Node));
     }
 
     void unlock(size_t thread_id) override {
@@ -42,7 +44,7 @@ public:
     }
 
     void destroy() override {
-        free((void*)tail);
+        FREE((void*)tail, sizeof(struct Node));
     }
 
     std::string name() override {
