@@ -1,7 +1,5 @@
 #include "lock.hpp"
 #include <stdexcept>
-#include <iostream>
-
 
 class LamportSleeperLock : public virtual SoftwareMutex {
 public:

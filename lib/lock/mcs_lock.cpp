@@ -18,23 +18,24 @@ public:
         (void)num_threads; // Unused
 
         this->tail = nullptr;
+        this->local_nodes = (volatile QNode*)malloc(sizeof(QNode) * num_threads);
     }
 
     void lock(size_t thread_id) override {
         (void)thread_id; // Unused
 
         // Initialize thread_local node
-        local_node.next = nullptr;
+        local_nodes[thread_id].next = nullptr;
         // Load old tail node of queue while also adding ourself to the queue
-        volatile QNode *old_tail = tail.exchange(&local_node, std::memory_order_acquire);
+        volatile QNode *old_tail = tail.exchange(&local_nodes[thread_id], std::memory_order_acquire);
         if (old_tail == nullptr) {
             // We're the only one in the queue; we successfully acquired the lock.
             return;
         } else {
             // Edit the tail to add ourself in.
-            local_node.locked = true;
-            old_tail->next = &local_node;
-            while (local_node.locked) {
+            local_nodes[thread_id].locked = true;
+            old_tail->next = &local_nodes[thread_id];
+            while (local_nodes[thread_id].locked) {
                 // spin_delay_exponential(); // Busy wait
             }
         }
@@ -43,18 +44,18 @@ public:
 
     void unlock(size_t thread_id) override {
         (void)thread_id; // Unused
-        if (local_node.next == nullptr) {
-            volatile QNode *expected = &local_node;
+        if (local_nodes[thread_id].next == nullptr) {
+            volatile QNode *expected = &local_nodes[thread_id];
             if (tail.compare_exchange_strong(expected, nullptr)) {
                 return;
             }
         }
 
-        while (local_node.next == nullptr) {
+        while (local_nodes[thread_id].next == nullptr) {
             // spin_delay_exponential(); // Busy wait
         }
 
-        local_node.next.load()->locked.store(false);
+        local_nodes[thread_id].next.load()->locked.store(false);
     }
 
     void destroy() override {
@@ -65,9 +66,6 @@ public:
         return "mcs";
     }
 private:
-    static volatile struct std::atomic<struct QNode volatile*> tail;
-    static thread_local volatile struct QNode local_node;
+    volatile struct std::atomic<struct QNode volatile*> tail;
+    volatile QNode* local_nodes;
 };
-
-volatile struct std::atomic<volatile QNode*> MCSMutex::tail = nullptr;
-thread_local volatile struct QNode MCSMutex::local_node = { 0, 0 };

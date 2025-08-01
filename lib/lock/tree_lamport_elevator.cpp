@@ -3,7 +3,6 @@
 #include <atomic>
 #include <math.h>
 #include <string.h>
-#include <iostream>
 
 #include "lamport_lock.cpp"
 

@@ -3,7 +3,6 @@
 #include <atomic>
 #include <math.h>
 #include <string.h>
-#include <iostream>
 
 #include "burns_lamport_lock.hpp"
 

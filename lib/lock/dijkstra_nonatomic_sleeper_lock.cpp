@@ -3,7 +3,6 @@
 #include "../utils/bench_utils.hpp"
 #include <semaphore>
 #include <errno.h>
-#include <iostream>
 
 #include <sys/syscall.h>
 

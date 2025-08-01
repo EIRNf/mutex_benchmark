@@ -55,6 +55,10 @@ public:
                 return; // Successfully passed off to successor
             }
         }
+
+        thread_n_is_waiting[thread_id] = false;
+        Fence();
+
         // No successor found.
         thread_n_given_lock[num_threads] = true;
     }
