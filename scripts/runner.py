@@ -5,6 +5,7 @@ from .logger    import logger
 import subprocess
 
 
+
 def get_data_file_name(mutex_name, i, **kwargs):
     name_root = f"{Constants.data_folder}/{mutex_name}-{i}"
     for name, value in kwargs.items():
@@ -44,6 +45,7 @@ def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, criti
             cmd += ["--stagger-ms", str(Constants.stagger_ms)]
 
     logger.debug(f"Bench command: {cmd}")
+    print(cmd)
     return cmd
 
 # def run_experiment_multi_threaded():

@@ -77,6 +77,8 @@ def main():
             run_experiment_iter("threads", iter_range=Constants.iter_threads, thread_level=False)
         elif Constants.bench == 'min':
             run_experiment_lock_level()
+        elif Constants.bench == 'lru':
+           run_experiment_lock_level()
         else:
             raise NotImplementedError(f"Benchmark {Constants.bench} not recognized.")
 

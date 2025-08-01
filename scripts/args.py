@@ -25,9 +25,14 @@ def init_args():
                      help='measure per-lock/unlock latency')
     experiment_type.add_argument('--iter-threads', type=int, nargs=3,
                      help='sweep iterations over a range of thread counts')
+
+
+    parser.add_argument('--lru', nargs=1, type=int, metavar=('KEYS'), help='number of keys in the lru workload')
+
     experiment_type.add_argument('--iter-noncritical-delay', type=int, nargs=3)
     experiment_type.add_argument('--iter-critical-delay', type=int, nargs=3)
     
+
     
     parser.add_argument('-r', '--rusage', action='store_true', help = 'record CPU usage instead of time/# iterations')
 
@@ -120,6 +125,11 @@ def init_args():
     Constants.iter_threads = args.iter_threads
     Constants.iter_noncritical_delay = args.iter_noncritical_delay
     Constants.rusage = args.rusage
+
+
+    Constants.keys = args.lru[0]
+
+
     Constants.iter_critical_delay = args.iter_critical_delay
     Constants.iter = args.iter_threads is not None or args.iter_noncritical_delay is not None or args.iter_critical_delay is not None
 
@@ -129,6 +139,7 @@ def init_args():
     Constants.executable = Constants.Defaults.EXECUTABLE
     Constants.multithreaded = args.multithreaded
     Constants.thread_level = args.thread_level
+
     Constants.scatter = args.scatter
     Constants.bench = args.bench
     Constants.groups = args.groups
@@ -139,6 +150,8 @@ def init_args():
         Constants.executable = "./build/apps/grouped_contention_bench/grouped_contention_bench"
     elif (args.bench=='min'):
         Constants.executable = "./build/apps/min_contention_bench/min_contention_bench"
+    elif (args.bench=='lru'):
+        Constants.executable = "./build/apps/lru_workload_bench/lru_workload_bench"
     else:
         raise NotImplementedError(f"Unknown executable: {args.bench}")
     
