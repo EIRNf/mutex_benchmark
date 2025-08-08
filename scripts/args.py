@@ -28,6 +28,7 @@ def init_args():
     experiment_type.add_argument('--iter-noncritical-delay', type=int, nargs=3)
     experiment_type.add_argument('--iter-critical-delay', type=int, nargs=3)
     
+    parser.add_argument('--capsiz', type=int)
     
     parser.add_argument('-r', '--rusage', action='store_true', help = 'record CPU usage instead of time/# iterations')
 
@@ -164,6 +165,7 @@ def init_args():
     Constants.bench = args.bench
     Constants.groups = args.groups
     Constants.stdev_scale = args.stdev
+    Constants.capsize = args.capsiz
 
     if (args.bench=='max'):
         Constants.executable = "./build/apps/max_contention_bench/max_contention_bench"
@@ -171,6 +173,8 @@ def init_args():
         Constants.executable = "./build/apps/grouped_contention_bench/grouped_contention_bench"
     elif (args.bench=='min'):
         Constants.executable = "./build/apps/min_contention_bench/min_contention_bench"
+    elif (args.bench=='kc_cache'):
+        Constants.executable = "./build/apps/kc_cache_bench/kc_cache_bench"
     else:
         raise NotImplementedError(f"Unknown executable: {args.bench}")
     

@@ -29,12 +29,12 @@ class Constants:
             "lamport", 
             "lamport_sleeper", 
             "boulangerie",
-            "tree_cas_elevator",
+            # "tree_cas_elevator",
             "linear_cas_elevator", #TODO: fix (Kush saw a data race once)
-            "tree_bl_elevator",
+            # "tree_bl_elevator",
             "linear_bl_elevator",  #TODO: fix (Kush saw a data race once)
             "linear_lamport_elevator", #TODO: fix (Kush saw a data race multiple times)
-            "tree_lamport_elevator", #TODO: fix trees (known to deadlock)
+            # "tree_lamport_elevator", #TODO: fix trees (known to deadlock)
             # "futex", TODO: Add guard for macOS
             "szymanski",
             "hard_spin"
@@ -96,12 +96,12 @@ class Constants:
             "halfnode", 
             "lamport", 
             "boulangerie",
-            "tree_cas_elevator",
+            # "tree_cas_elevator",
             "linear_cas_elevator", #TODO: fix (Kush saw a data race once)
-            "tree_bl_elevator",
+            # "tree_bl_elevator",
             "linear_bl_elevator",  #TODO: fix (Kush saw a data race once)
             "linear_lamport_elevator", #TODO: fix (Kush saw a data race multiple times)
-            "tree_lamport_elevator", #TODO: fix trees (known to deadlock)
+            # "tree_lamport_elevator", #TODO: fix trees (known to deadlock)
             # "futex", TODO: Add guard for macOS
             "szymanski",
             # "yang", TODO: Sometimes deadlocks
@@ -188,6 +188,7 @@ class Constants:
     noncritical_delay: int
     groups: int
     critical_delay: int
+    capsize: int
 
     low_contention = Defaults.LOW_CONTENTION
     stagger_ms     = Defaults.STAGGER_MS

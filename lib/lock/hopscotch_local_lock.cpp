@@ -75,5 +75,5 @@ private:
     static thread_local bool which_node;
 };
 HopscotchLocalMutex::Node HopscotchLocalMutex::default_node = { false };
-thread_local HopscotchLocalMutex::Node HopscotchLocalMutex::nodes[2] = { false, false };
+alignas(2) thread_local HopscotchLocalMutex::Node HopscotchLocalMutex::nodes[2] = { false, false };
 thread_local bool HopscotchLocalMutex::which_node = 0;

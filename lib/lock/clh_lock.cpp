@@ -24,15 +24,16 @@ public:
         // to some true value so that the next successor can immediately lock.
         // This means that predecessor is never a null pointer.
         tail = (struct Node*)ALLOCATE(sizeof(struct Node*));
+        nodes = (Node **)ALLOCATE(sizeof(Node*)*num_threads);
         tail.load()->successor_must_wait = false;
     }
 
     void lock(size_t thread_id) override {
         (void)thread_id; // Unused
 
-        node = (struct Node*)ALLOCATE(sizeof(struct Node));
-        node->successor_must_wait = true;
-        struct Node *predecessor = tail.exchange(node, std::memory_order_relaxed);
+        nodes[thread_id] = (struct Node*)ALLOCATE(sizeof(struct Node)); //why is it allocating every loop?????
+        nodes[thread_id]->successor_must_wait = true;
+        struct Node *predecessor = tail.exchange(nodes[thread_id], std::memory_order_relaxed);
         while (predecessor->successor_must_wait);
         FREE((void*)predecessor, sizeof(struct Node));
     }
@@ -40,7 +41,7 @@ public:
     void unlock(size_t thread_id) override {
         (void)thread_id; // Unused
 
-        node->successor_must_wait = false;
+        nodes[thread_id]->successor_must_wait = false;
     }
 
     void destroy() override {
@@ -51,8 +52,6 @@ public:
         return "clh";
     }
 private:
-    static std::atomic<struct Node*> tail;
-    static thread_local struct Node *node;
+    std::atomic<struct Node*> tail;
+    Node **nodes;
 };
-std::atomic<struct CLHMutex::Node*> CLHMutex::tail;
-thread_local struct CLHMutex::Node *CLHMutex::node;

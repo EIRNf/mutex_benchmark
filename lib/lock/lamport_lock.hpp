@@ -7,8 +7,6 @@
 #include "trylock.hpp"
 #include "../utils/cxl_utils.hpp"
 #include <stdexcept>
-#include <iostream>
-
 
 class LamportLock : public virtual TryLock {
 public:
@@ -58,6 +56,7 @@ public:
                 goto start;
             }
         }
+        Fence();
     }
     
     bool trylock(size_t thread_id){
@@ -94,6 +93,7 @@ public:
     }
 
     void unlock(size_t thread_id) override {
+        Fence();
         *y=0;
         Fence();
         b[thread_id] = false;

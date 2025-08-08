@@ -4,7 +4,6 @@
 #include <atomic>
 #include <stdio.h>
 #include <string.h>
-#include <immintrin.h>
 
 // TODO: explicit memory ordering.
 // NOTE: Because of the limitations of `thread_local`,

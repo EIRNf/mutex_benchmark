@@ -1,6 +1,7 @@
 import pandas as pd # pyright: ignore[reportMissingModuleSource]
 import numpy as np # pyright: ignore[reportMissingImports]
 import matplotlib.pyplot as plt # pyright: ignore[reportMissingModuleSource]
+import matplotlib
 import seaborn as sns # pyright: ignore[reportMissingModuleSource]
 import itertools
 
@@ -16,7 +17,7 @@ coloring = [
     "#911eb4", "#46f0f0", "#f032e6", "#bcf60c", "#fabebe",
     "#008080", "#e6beff", "#9a6324", "#fffac8", "#800000",
     "#aaffc3", "#808000", "#ffd8b1", "#000075", "#808080",
-    "#ffffff", "#000000", "#ff4500", "#00ced1", "#ff69b4",
+    "#000000", "#ff4500", "#00ced1", "#ff69b4",
     "#1e90ff", "#7cfc00", "#ff1493", "#00ff7f", "#dc143c",
     "#8a2be2", "#00bfff", "#ff6347", "#7fffd4", "#d2691e",
     "#6495ed", "#dda0dd", "#f0e68c", "#ffb6c1", "#a52a2a"
@@ -66,8 +67,8 @@ def display(axis=None, tight_layout=True):
     fix_legend_point_size(axis)
     if tight_layout:
         plt.tight_layout()
-    plt.savefig(get_savefig_filepath())
-    plt.show()
+    plt.savefig(get_savefig_filepath(), dpi=400)
+    # plt.show()
 
 def plot_one_cdf(series, mutex_name, *, xlabel, ylabel, title, average_lock_time=None):
     logger.info(f"Plotting {mutex_name=}")
@@ -142,12 +143,13 @@ def plot_iter(data):
         sns.lineplot(
             df, 
             x=Constants.iter_variable_name, 
-            y="# Iterations", 
+            y="Throughput", 
             errorbar=("sd", Constants.stdev_scale), 
             label=mutex_name,
             marker=style["marker"],
             color=style["color"]
         )
+    plt.ylabel('Throughput (Iterations/ms)')
     plt.yscale("log")
     display()
 

@@ -10,7 +10,6 @@ boost_dep = dependency('boost', static : true, required: false)
 utils_includes = include_directories('.')
 utils_lib = library(
   'utils', 'bench_utils.cpp', 'cxl_utils.hpp',
-  'emucxl_lib.c', 'emucxl_lib.h', 'emucxl_kernel.h',
   include_directories : utils_includes,
   dependencies : [boost_dep, nsync_dep]
 )

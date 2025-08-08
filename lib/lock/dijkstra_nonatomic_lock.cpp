@@ -1,5 +1,7 @@
 #include "../utils/cxl_utils.hpp"
+#ifdef cxl
 #include "../utils/emucxl_lib.h"
+#endif
 
 #include "lock.hpp"
 #include <stdexcept>

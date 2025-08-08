@@ -47,10 +47,12 @@ public:
         default_node->successor_must_wait = false;
         *tail = default_node;
         memset((void*)nodes, 0, nodes_size + default_node_size);
+
+        this->which_nodes = (bool*)ALLOCATE(sizeof(bool)*num_threads);
     }
 
     inline Node *my_node(size_t thread_id) {
-        return &nodes[thread_id * 2 + which_node];
+        return &nodes[thread_id * 2 + which_nodes[thread_id]];
     }
 
     void lock(size_t thread_id) override {
@@ -63,7 +65,7 @@ public:
     void unlock(size_t thread_id) override {
         my_node(thread_id)->successor_must_wait = false;
         // The Hopscotch part, flipping to the other node to avoid reusing a node slot prematurely.
-        which_node ^= 1;
+        which_nodes[thread_id] ^= 1;
     }
 
     void destroy() override {
@@ -87,6 +89,5 @@ private:
     std::atomic<Node*>* tail;
     Node *nodes;
     // This can be stored locally because nothing else depends on it.
-    static thread_local bool which_node;
+    bool* which_nodes;
 };
-thread_local bool HopscotchMutex::which_node = 0;

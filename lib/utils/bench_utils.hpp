@@ -15,6 +15,7 @@
 
 class SoftwareMutex;
 
+
 struct per_thread_stats {
     int thread_id;
     int num_iterations;

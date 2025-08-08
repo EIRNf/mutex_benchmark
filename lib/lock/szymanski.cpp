@@ -2,7 +2,6 @@
 #include <atomic>
 #include <vector>
 #include <thread>
-#include <iostream>
 #include <string>
 
 class SzymanskiLock : public virtual SoftwareMutex {

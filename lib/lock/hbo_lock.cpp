@@ -74,11 +74,6 @@ private:
             // If the lock is held by a different node, the thread applies a less aggressive backoff strategy
             b = REMOTE_BACKOFF_BASE;
 
-            // Waits until a change in the lock state is detected
-            while (lock_.load(std::memory_order_relaxed) == is_spinning_[my_node].load(std::memory_order_relaxed)) {
-                std::this_thread::yield();
-            }
-
             is_spinning_[my_node].store(lock_.load(std::memory_order_relaxed), std::memory_order_relaxed);
 
             while (true) {

@@ -5,6 +5,7 @@
 #include <atomic>
 #include <stdio.h>
 #include <time.h>
+#include <cxl_utils.hpp>
 
 // TODO: explicit memory ordering.
 // NOTE: Because of the limitations of `thread_local`,
@@ -26,13 +27,19 @@ public:
         (void)num_threads; // Unused
 
         this->tail = nullptr;
+
+        this->states = (HNode*)ALLOCATE(sizeof(HNode)*num_threads);
+        for (int i =0; i<num_threads; i++){
+            states[i].successor_must_wait=false;
+            states[i].successor_waiting=true;
+        }
     }
 
     void lock(size_t thread_id) override {
         (void)thread_id; // Unused
 
-        this->state.successor_must_wait = true;
-        struct HNode *predecessor = tail.exchange(&this->state);
+        this->states[thread_id].successor_must_wait = true;
+        struct HNode *predecessor = tail.exchange(&this->states[thread_id]);
 
         if (predecessor != nullptr) {
             while (predecessor->successor_must_wait) {
@@ -45,17 +52,17 @@ public:
     void unlock(size_t thread_id) override {
         (void)thread_id; // Unused
 
-        if (tail == &this->state) {
-            struct HNode *expected = &this->state;
+        if (tail == &this->states[thread_id]) {
+            struct HNode *expected = &this->states[thread_id];
             if (tail.compare_exchange_strong(expected, nullptr, std::memory_order_release)) {
                 return;
             }
         }
         // Signal to successor that this thread is done.
-        this->state.successor_waiting = true;
-        this->state.successor_must_wait = false;
+        this->states[thread_id].successor_waiting = true;
+        this->states[thread_id].successor_must_wait = false;
 
-        while (this->state.successor_waiting) {
+        while (this->states[thread_id].successor_waiting) {
             // spin_delay_exponential(); // Wait until the successor reads the unlocked state to proceed.
         }
     }
@@ -66,8 +73,6 @@ public:
         return "halfnode";
     }
 private:
-    static std::atomic<struct HNode*> tail;
-    static thread_local struct HNode state;
+    std::atomic<struct HNode*> tail;
+    HNode* states;
 };
-std::atomic<struct HNode*> HalfnodeMutex::tail;
-thread_local struct HNode HalfnodeMutex::state = { false, true };

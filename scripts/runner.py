@@ -5,7 +5,7 @@ from .logger    import logger
 import subprocess
 
 def get_data_file_name(mutex_name, i, **kwargs):
-    name_root = f"{Constants.data_folder}/{mutex_name}-{i}"
+    name_root = f"{Constants.data_folder}/{mutex_name}-{i}-{Constants.bench}"
     for name, value in kwargs.items():
         name_root += f"-{name}={value}"
     name = name_root + ".csv"
@@ -28,6 +28,8 @@ def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, criti
         cmd.insert(0, "sudo")
     if Constants.groups:
         cmd.append(str(Constants.groups))
+    if Constants.capsize:
+        cmd.append(str(Constants.capsize))
     if critical_delay != -1:
         cmd += ["--critical-delay", str(critical_delay)]
     if noncritical_delay != -1:
@@ -69,6 +71,7 @@ def run_experiment_iter_single_threaded():
                 subprocess.run(["rm", "-f", data_file_name])
                 command = get_command(mutex_name, csv=True, thread_level=Constants.thread_level, **extra_command_args)
                 thread = subprocess.run(command, stdout=subprocess.PIPE)
+                assert thread.returncode ==0, thread.stdout
                 csv_data = thread.stdout
                 with open(data_file_name, "wb") as data_file:
                     data_file.write(csv_data)

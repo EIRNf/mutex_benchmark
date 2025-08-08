@@ -56,7 +56,10 @@ def load_data_iter():
                 data_file_name = get_data_file_name(mutex_name, i, **extra_command_args)
                 dataframe = pd.read_csv(data_file_name, names=get_column_names(Constants.rusage))
                 dataframes.append(dataframe)
+            
             dataframes=pd.concat(dataframes)
             dataframes[Constants.iter_variable_name] = iter_variable_value
+            if not Constants.rusage:
+                dataframes["Throughput"] = dataframes["# Iterations"]/(dataframes["Seconds"]*10**3)
             all_dataframes.append(dataframes)
         yield mutex_name, pd.concat(all_dataframes)
