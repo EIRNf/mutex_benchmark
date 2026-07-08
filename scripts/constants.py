@@ -334,6 +334,7 @@ class Constants:
     software_cxl: bool
     hardware_cxl: bool
     skip_plotting: bool
+    show: bool = False
     averages: bool
     iter_variable_name: str
     stdev_scale: float

@@ -224,7 +224,15 @@ def _style_legend(ax, ncols=None):
 
 
 def display(axes=None, tight_layout=True):
-    """Style legends, save figure, and plt.show()."""
+    """Style legends, save figure, and (only if --show was passed) plt.show().
+
+    plt.show() blocks waiting for a GUI event loop. Matplotlib reports
+    interactive-looking backends (e.g. macosx) as usable even when there is
+    no real foreground session to display a window in (e.g. run from a
+    script/CI/background process), so it isn't safe to auto-detect this --
+    showing is opt-in via Constants.show instead. The figure is always saved
+    to disk regardless, so no output is lost by not showing it.
+    """
     if axes is not None:
         ax_list = axes if hasattr(axes, '__iter__') else [axes]
         for ax in ax_list:
@@ -236,7 +244,10 @@ def display(axes=None, tight_layout=True):
     path = get_savefig_filepath()
     plt.savefig(path, bbox_inches='tight', dpi=DPI)
     logger.info(f"Saved figure → {path}")
-    plt.show()
+    if getattr(Constants, 'show', False):
+        plt.show()
+    else:
+        plt.close()
 
 
 # ════════════════════════════════════════════════════════════════

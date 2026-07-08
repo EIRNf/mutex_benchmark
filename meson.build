@@ -8,4 +8,5 @@ project(
 
 subdir('lib')
 subdir('apps')
+subdir('tests')
 

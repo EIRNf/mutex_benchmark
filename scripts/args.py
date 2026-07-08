@@ -93,6 +93,9 @@ def init_args():
 
     parser.add_argument('--bench', type=str, default='max')
     parser.add_argument('--skip-plotting', action='store_true')
+    parser.add_argument('--show', action='store_true',
+                        help='display each plot interactively (blocks on plt.show()); '
+                             'by default plots are only saved to the figs folder')
     parser.add_argument('--variability', action='store_true', default=False,
                      help='additionally plot coefficient of variation (σ/μ) vs iter variable')
     parser.add_argument('--speedup', nargs='?', const='exp_spin', default=None, metavar='REF_MUTEX',
@@ -206,6 +209,7 @@ def init_args():
     Constants.low_contention = args.low_contention
     Constants.stagger_ms     = args.stagger_ms
     Constants.skip_plotting = args.skip_plotting
+    Constants.show = args.show
     Constants.variability = args.variability
     Constants.speedup = args.speedup is not None
     Constants.speedup_ref = args.speedup
