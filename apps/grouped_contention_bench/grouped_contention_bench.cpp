@@ -1,7 +1,8 @@
 #include "grouped_contention_bench.hpp"
-#include <string.h> 
+#include <string.h>
 #include <stdio.h>
 #include "bench_utils.hpp"
+#include "bench_harness.hpp"
 #include "cxl_utils.hpp"
 #include "memory.h"
 #include "stdio.h"
@@ -10,9 +11,17 @@
 
 #include "lock.hpp"
 
+#ifdef __linux__
+#include <numa.h>
+#endif
+
 int grouped_contention_bench(int num_threads, double run_time, int num_groups, bool csv, bool rusage, SoftwareMutex* lock) {
 
-
+#ifdef hardware_cxl
+    int numa = numa_available()+1;
+#else
+    int numa = 0;
+#endif
 
     // Create run args structure to hold thread arguments
     // struct run_args args;
@@ -85,11 +94,9 @@ int grouped_contention_bench(int num_threads, double run_time, int num_groups, b
         record_rusage(csv);
     }
 
-    // Cleanup resources
-    lock->destroy(); // Cleanup the lock resources
-
-    // Destroy the lock 
-    delete lock; // Assuming lock was dynamically allocated
+    // Cleanup resources: destroy and free the lock (numa_delete when the
+    // lock was NUMA-allocated by get_mutex(), plain delete otherwise).
+    destroy_and_delete_lock(lock, numa);
 
     // Output benchmark results
 

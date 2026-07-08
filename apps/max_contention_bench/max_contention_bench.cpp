@@ -19,6 +19,7 @@
 
 #include "max_contention_bench.hpp"
 #include "bench_utils.hpp"
+#include "bench_harness.hpp"
 #include "cxl_utils.hpp"
 #include "lock.hpp"
 
@@ -44,20 +45,7 @@ int max_contention_bench(
 #endif
 
     // Set process-wide memory policy to node 2 to prevent any allocations on nodes 0 and 1
-#ifdef __linux__
-    if (numa) {
-        unsigned long nodemask[16] = {0};
-        nodemask[0] = 1UL << 2;  // Node 2
-        unsigned long maxnode = sizeof(nodemask) * 8;
-
-        // Set memory policy for entire process
-        if (set_mempolicy(MPOL_BIND, nodemask, maxnode) != 0) {
-            fprintf(stderr, "WARNING: Failed to set memory policy to node 2: %s\n", strerror(errno));
-        } else {
-            fprintf(stderr, "Successfully set process memory policy to node 2\n");
-        }
-    }
-#endif
+    setup_numa_mempolicy_or_warn(numa);
 
     // Create run args structure to hold thread arguments
     // struct run_args args;
@@ -336,24 +324,21 @@ int max_contention_bench(
             *total_unfair, expectedCounter, unfair_percentage);
     }
 
-    lock->destroy();
-
     // Free NUMA-allocated memory properly
 #ifdef __linux__
     if (numa) {
         numa_free((void*)counter, sizeof(int));
         numa_free((void*)last, sizeof(int));
         numa_free((void*)total_unfair, sizeof(int));
-         // Use NUMA-aware delete for the lock object
-        numa_delete(lock);
     } else
 #endif
     {
         delete counter;
         delete last;
         delete total_unfair;
-        // delete lock; //TODO WHY
     }
+
+    destroy_and_delete_lock(lock, numa);
 
     // COMMENTED OUT: Using memeater for preallocation instead
     /*

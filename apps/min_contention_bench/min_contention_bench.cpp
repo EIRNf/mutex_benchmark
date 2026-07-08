@@ -17,6 +17,7 @@
 
 #include "min_contention_bench.hpp"
 #include "bench_utils.hpp"
+#include "bench_harness.hpp"
 #include "cxl_utils.hpp"
 #include "lock.hpp"
 
@@ -107,17 +108,8 @@ int min_contention_bench(
 
     if (thread.joinable()) thread.join();
 
-    lock->destroy();
     free((void*)counter);
-
-#ifdef __linux__
-    if (numa){
-        numa_delete(lock);
-    } else
-#endif
-    {
-        // delete lock;//TODO WHY
-    }
+    destroy_and_delete_lock(lock, numa);
 
 
     if (!no_output) {

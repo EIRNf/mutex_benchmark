@@ -31,7 +31,7 @@ public:
     }
 
     std::string name() override {
-        return "djikstra";
+        return "ticket";
     }
 
 private:
