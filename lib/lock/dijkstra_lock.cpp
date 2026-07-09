@@ -1,19 +1,22 @@
 #include "lock.hpp"
 #include "../utils/cxl_utils.hpp"
+#include "../utils/region_layout.hpp"
 #include <stdexcept>
 
 class DijkstraMutex : public virtual SoftwareMutex {
 public:
     void init(size_t num_threads) override {
-        size_t k_size = sizeof(std::atomic_size_t);
-        size_t unlocking_size = sizeof(std::atomic_bool) * (num_threads + 1);
-        size_t c_size = sizeof(std::atomic_bool) * (num_threads + 1);
-        _cxl_region_size = sizeof(std::atomic_size_t) + unlocking_size + c_size;
+        RegionLayout layout;
+        auto k_handle         = layout.reserve<std::atomic_size_t>();
+        auto unlocking_handle = layout.reserve_array<std::atomic_bool>(num_threads + 1);
+        auto c_handle         = layout.reserve_array<std::atomic_bool>(num_threads + 1);
+
+        _cxl_region_size = layout.total_size();
         _cxl_region = (volatile char*)ALLOCATE(_cxl_region_size);
 
-        this->k = (std::atomic_size_t*)&_cxl_region[0];
-        this->unlocking = (std::atomic_bool*)&_cxl_region[k_size];
-        this->c         = (std::atomic_bool*)&_cxl_region[k_size + unlocking_size];
+        this->k         = RegionLayout::resolve(k_handle, _cxl_region);
+        this->unlocking = RegionLayout::resolve(unlocking_handle, _cxl_region);
+        this->c         = RegionLayout::resolve(c_handle, _cxl_region);
         for (size_t i = 0; i < num_threads + 1; i++) {
             unlocking[i] = true;
             c[i] = true;

@@ -16,7 +16,10 @@ public:
     void init(size_t num_threads) override {
         this->unlocking = (volatile bool*)malloc(sizeof(bool) * (num_threads+1));
         this->c = (volatile bool*)malloc(sizeof(bool) * (num_threads+1));
-        for (size_t i = 0; i <= num_threads+1; i++) {
+        // Valid indices are 0..num_threads (num_threads+1 elements); this
+        // loop previously used `<=` and wrote one element past the end of
+        // both arrays on every init().
+        for (size_t i = 0; i < num_threads+1; i++) {
             unlocking[i] = true;
             c[i] = true;
         }

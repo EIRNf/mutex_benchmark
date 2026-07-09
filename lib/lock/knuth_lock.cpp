@@ -1,5 +1,6 @@
 #include "lock.hpp"
 #include "../utils/cxl_utils.hpp"
+#include "../utils/region_layout.hpp"
 #include <stdexcept>
 #include <atomic>
 #include <cstring>
@@ -11,11 +12,15 @@
 class KnuthMutex : public virtual SoftwareMutex {
 public:
     void init(size_t num_threads) override {
-        _cxl_region_size = sizeof(std::atomic_int) * (num_threads + 1);
+        RegionLayout layout;
+        auto k_handle = layout.reserve<std::atomic_int>();
+        auto control_handle = layout.reserve_array<std::atomic_int>(num_threads);
+
+        _cxl_region_size = layout.total_size();
         _cxl_region = (volatile char*)ALLOCATE(_cxl_region_size);
 
-        this->k = (std::atomic_int*)&_cxl_region[0];
-        this->control = (volatile std::atomic_int*)&_cxl_region[sizeof(std::atomic_int)];
+        this->k = RegionLayout::resolve(k_handle, _cxl_region);
+        this->control = RegionLayout::resolve(control_handle, _cxl_region);
 
         memset((void*)control, 0, sizeof(std::atomic_int) * num_threads);
         *this->k = 0;

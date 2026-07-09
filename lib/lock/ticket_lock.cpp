@@ -1,5 +1,6 @@
 #include "lock.hpp"
 #include "../utils/cxl_utils.hpp"
+#include "../utils/region_layout.hpp"
 #include <stdexcept>
 #include <atomic>
 
@@ -7,10 +8,14 @@ class TicketMutex : public virtual SoftwareMutex {
 public:
     void init(size_t num_threads) override {
         (void)num_threads;
-        size_t _cxl_region_size = sizeof(std::atomic_size_t) * 2;
+        RegionLayout layout;
+        auto next_ticket_handle = layout.reserve<std::atomic_size_t>();
+        auto now_serving_handle = layout.reserve<std::atomic_size_t>();
+
+        _cxl_region_size = layout.total_size();
         _cxl_region = (volatile char *)ALLOCATE(_cxl_region_size);
-        next_ticket = (std::atomic_size_t*)&_cxl_region[0];
-        now_serving = (std::atomic_size_t*)&_cxl_region[sizeof(std::atomic_size_t)];
+        next_ticket = RegionLayout::resolve(next_ticket_handle, _cxl_region);
+        now_serving = RegionLayout::resolve(now_serving_handle, _cxl_region);
     }
 
     void lock(size_t thread_id) override {
@@ -27,7 +32,7 @@ public:
     }
 
     void destroy() override {
-        FREE((void*)_cxl_region, sizeof(std::atomic_size_t) * 2);
+        FREE((void*)_cxl_region, _cxl_region_size);
     }
 
     std::string name() override {
@@ -36,6 +41,7 @@ public:
 
 private:
     volatile char *_cxl_region;
+    size_t _cxl_region_size;
 
     std::atomic_size_t *next_ticket;
     std::atomic_size_t *now_serving;

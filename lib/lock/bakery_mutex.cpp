@@ -1,4 +1,5 @@
 #include "../utils/cxl_utils.hpp"
+#include "../utils/region_layout.hpp"
 #include "lock.hpp"
 #include <stdexcept>
 #include <atomic>
@@ -6,13 +7,15 @@
 class BakeryMutex : public virtual SoftwareMutex {
 public:
     void init(size_t num_threads) override {
-        size_t number_size = sizeof(std::atomic<size_t>) * num_threads;
-        size_t choosing_size = sizeof(std::atomic_bool) * num_threads;
-        _cxl_region_size = number_size + choosing_size;
+        RegionLayout layout;
+        auto number_handle = layout.reserve_array<std::atomic<size_t>>(num_threads);
+        auto choosing_handle = layout.reserve_array<std::atomic_bool>(num_threads);
+
+        _cxl_region_size = layout.total_size();
         _cxl_region = (volatile char*)ALLOCATE(_cxl_region_size);
 
-        this->number = (volatile std::atomic<size_t>*)&_cxl_region[0];
-        this->choosing = (volatile std::atomic_bool*)&_cxl_region[number_size];
+        this->number = RegionLayout::resolve(number_handle, _cxl_region);
+        this->choosing = RegionLayout::resolve(choosing_handle, _cxl_region);
 
         for (size_t i = 0; i < num_threads; i++) {
             choosing[i] = false;

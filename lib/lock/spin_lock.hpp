@@ -4,6 +4,7 @@
 #pragma once
 
 #include "../utils/cxl_utils.hpp"
+#include "../utils/region_layout.hpp"
 #include "lock.hpp"
 #include "trylock.hpp"
 #include <atomic>
@@ -16,19 +17,26 @@
         void init(size_t num_threads) override {
             (void)num_threads; // This parameter is not used
 
-            this->lock_ = (std::atomic_flag*)ALLOCATE(sizeof(std::atomic_flag));
+            this->_cxl_region_size = get_cxl_region_size(num_threads);
+            volatile char *region = (volatile char*)ALLOCATE(_cxl_region_size);
+            this->region_init(num_threads, region);
         }
 
         static size_t get_cxl_region_size(size_t num_threads) {
             (void)num_threads;
 
-            return sizeof(std::atomic_flag);
+            RegionLayout layout;
+            layout.reserve<std::atomic_flag>();
+            return layout.total_size();
         }
 
         void region_init(size_t num_threads, volatile char *_cxl_region) override {
             (void)num_threads; // This parameter is not used
 
-            this->lock_ = (std::atomic_flag*)_cxl_region;
+            RegionLayout layout;
+            auto handle = layout.reserve<std::atomic_flag>();
+            this->_cxl_region_size = layout.total_size();
+            this->lock_ = RegionLayout::resolve(handle, _cxl_region);
         }
 
         void lock(size_t thread_id) override {
@@ -53,15 +61,23 @@
         }
 
         void destroy() override {
-            FREE((void*)this->lock_, 1);
+            // Previously hardcoded as FREE(lock_, 1) -- a magic number that
+            // happened to match sizeof(std::atomic_flag) on this platform.
+            // Now reuses the same size the region was allocated with.
+            FREE((void*)this->lock_, _cxl_region_size);
         }
 
         std::string name() override {
             return "spin";
         }
-        
+
     private:
-        std::atomic_flag *lock_ = ATOMIC_FLAG_INIT;
+        // A pointer, so it must be null-initialized -- ATOMIC_FLAG_INIT
+        // ({false}) is for initializing an std::atomic_flag object, not a
+        // pointer to one; using it here previously made this branch fail to
+        // compile at all under -Dcxl.
+        std::atomic_flag *lock_ = nullptr;
+        size_t _cxl_region_size = 0;
     };
 #else
     class SpinLock : public virtual TryLock {

@@ -1,5 +1,6 @@
 #include "lock.hpp"
 #include "cxl_utils.hpp"
+#include "region_layout.hpp"
 #include <stdexcept>
 #include <atomic>
 #include <stdio.h>
@@ -18,19 +19,19 @@ public:
     };
 
     void init(size_t num_threads) override {
-        size_t nodes_size = std::hardware_destructive_interference_size * num_threads;
-        _cxl_region_size = sizeof(std::atomic<Node*>) + nodes_size;
+        RegionLayout layout;
+        nodes_handle = layout.reserve_strided_array<Node>(num_threads);
+        auto tail_handle = layout.reserve<std::atomic<Node*>>();
+
+        _cxl_region_size = layout.total_size();
         this->_cxl_region = (volatile char *)ALLOCATE(_cxl_region_size);
-        this->nodes = (Node*)&_cxl_region[0];
-        this->tail = (std::atomic<Node*>*)&_cxl_region[nodes_size];
+        this->tail = RegionLayout::resolve(tail_handle, _cxl_region);
         *this->tail = nullptr;
-        memset((void*)this->nodes, 0, nodes_size);
+        memset((void*)get_node_by_thread_id(0), 0, nodes_handle.stride * num_threads);
     }
 
     inline Node *get_node_by_thread_id(size_t thread_id) {
-        Node *result = (Node*)&this->_cxl_region[thread_id * std::hardware_destructive_interference_size];
-        // printf("_cxl_region@%p: getting Node@%p\n", this->_cxl_region, this->_cxl_region[thread_id * std::hardware_destructive_interference_size]);
-        return result;
+        return RegionLayout::resolve_strided(nodes_handle, this->_cxl_region, thread_id);
     }
 
     void lock(size_t thread_id) override {
@@ -79,5 +80,5 @@ private:
     size_t _cxl_region_size;
 
     std::atomic<Node*>* tail;
-    Node *nodes;
+    RegionLayout::StridedHandle<Node> nodes_handle;
 };

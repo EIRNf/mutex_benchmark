@@ -5,3 +5,11 @@ mutex_factory_smoketest = executable(
 )
 
 test('mutex_factory_smoketest', mutex_factory_smoketest)
+
+region_layout_test = executable(
+  'region_layout_test',
+  'region_layout_test.cpp',
+  dependencies : [utils_dep],
+)
+
+test('region_layout_test', region_layout_test)

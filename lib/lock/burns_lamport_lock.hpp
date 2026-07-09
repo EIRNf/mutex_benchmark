@@ -5,6 +5,7 @@
 
 #include "lock.hpp"
 #include "trylock.hpp"
+#include "../utils/region_layout.hpp"
 #include <atomic>
 #include <time.h>
 #include <stdexcept>
@@ -13,20 +14,24 @@
 class BurnsLamportMutex : public virtual TryLock {
 public:
     void init(size_t num_threads) override {
-        size_t _cxl_region_size = get_cxl_region_size(num_threads);
+        _cxl_region_size = get_cxl_region_size(num_threads);
         _cxl_region = (volatile char*)ALLOCATE(_cxl_region_size);
         this->region_init(num_threads, _cxl_region);
     }
 
     static size_t get_cxl_region_size(size_t num_threads) {
-        return sizeof(size_t) + sizeof(volatile bool) * (num_threads + 1);
+        return compute_layout(num_threads).total_size;
     }
 
-    void region_init(size_t num_threads, volatile char *_cxl_region) override {
-        this->fast = (volatile bool*)&_cxl_region[0];
+    void region_init(size_t num_threads, volatile char *_cxl_region_in) override {
+        Layout layout = compute_layout(num_threads);
+        this->_cxl_region = _cxl_region_in;
+        this->_cxl_region_size = layout.total_size;
+
+        this->fast = RegionLayout::resolve(layout.fast, _cxl_region_in);
         *this->fast = false;
-        this->in_contention = (volatile bool*)&_cxl_region[sizeof(volatile bool)];
-        memset((void*)in_contention, 0, sizeof(volatile bool) * num_threads);
+        this->in_contention = RegionLayout::resolve(layout.in_contention, _cxl_region_in);
+        memset((void*)in_contention, 0, sizeof(bool) * num_threads);
         this->num_threads = num_threads;
     }
 
@@ -45,9 +50,9 @@ public:
             }
         }
         bool leader;
-        if (!*fast) { 
-            *fast = true; 
-            leader = true; 
+        if (!*fast) {
+            *fast = true;
+            leader = true;
         } else {
             leader = false;
         }
@@ -67,15 +72,33 @@ public:
     }
 
     void destroy() override {
-        FREE((void*)_cxl_region, get_cxl_region_size(num_threads));
+        FREE((void*)_cxl_region, _cxl_region_size);
     }
 
     std::string name() override {
         return "burns_lamport";
     }
-    
+
 private:
+    struct Layout {
+        RegionLayout::Handle<bool> fast;
+        RegionLayout::Handle<bool> in_contention;
+        size_t total_size;
+    };
+
+    // Single source of truth for this lock's region layout -- both
+    // get_cxl_region_size() and region_init() build the same layout here,
+    // so the size passed to ALLOCATE/FREE can never drift from the offsets
+    // actually used to place `fast`/`in_contention`.
+    static Layout compute_layout(size_t num_threads) {
+        RegionLayout builder;
+        auto fast_handle = builder.reserve<bool>();
+        auto in_contention_handle = builder.reserve_array<bool>(num_threads);
+        return Layout{fast_handle, in_contention_handle, builder.total_size()};
+    }
+
     volatile char *_cxl_region;
+    size_t _cxl_region_size;
     volatile bool *fast;
     volatile bool *in_contention;
     size_t num_threads;

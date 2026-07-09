@@ -23,7 +23,13 @@ public:
         // The lock starts off unlocked by setting tail to a pointer
         // to some true value so that the next successor can immediately lock.
         // This means that predecessor is never a null pointer.
-        tail = (struct Node*)ALLOCATE(sizeof(struct Node*));
+        //
+        // Sized as sizeof(struct Node), matching every other place a Node is
+        // allocated/freed in this file (lock()'s ALLOCATE, the predecessor
+        // FREE, and destroy()'s FREE) -- this sentinel node was previously
+        // sized as sizeof(struct Node*) (a pointer, not the object it points
+        // to), an alloc/free size mismatch under -Dcxl/-Dhardware_cxl.
+        tail = (struct Node*)ALLOCATE(sizeof(struct Node));
         tail.load()->successor_must_wait = false;
     }
 

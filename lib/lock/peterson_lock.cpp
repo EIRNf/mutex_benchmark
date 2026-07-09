@@ -1,11 +1,26 @@
 #include "lock.hpp"
+#include "../utils/cxl_utils.hpp"
+#include "../utils/region_layout.hpp"
 #include <stdexcept>
+#include <atomic>
 
 class PetersonMutex : public virtual SoftwareMutex {
 public:
     void init(size_t num_threads) override {
-        this->level         = (volatile std::atomic<int   >*)ALLOCATE(sizeof(volatile std::atomic<int   >) * num_threads);
-        this->last_to_enter = (volatile std::atomic<size_t>*)ALLOCATE(sizeof(volatile std::atomic<size_t>) * num_threads); // Does not need initialization.
+        // Previously two independent ALLOCATE calls -- under -Dhardware_cxl
+        // each is its own NUMA placement decision, so `level` and
+        // `last_to_enter` weren't guaranteed to land on the same node even
+        // though they're accessed together on every lock()/unlock(). Now
+        // carved out of a single region like the other locks in this file.
+        RegionLayout layout;
+        auto level_handle = layout.reserve_array<std::atomic<int>>(num_threads);
+        auto last_to_enter_handle = layout.reserve_array<std::atomic<size_t>>(num_threads);
+
+        _cxl_region_size = layout.total_size();
+        _cxl_region = (volatile char*)ALLOCATE(_cxl_region_size);
+        this->level         = RegionLayout::resolve(level_handle, _cxl_region);
+        this->last_to_enter = RegionLayout::resolve(last_to_enter_handle, _cxl_region); // Does not need initialization.
+
         for (size_t i = 0; i < num_threads; i++) {
             this->level[i] = -1;
         }
@@ -42,8 +57,7 @@ public:
     }
 
     void destroy() override {
-        FREE((void*)level, sizeof(volatile std::atomic<int>) * num_threads);
-        FREE((void*)last_to_enter, sizeof(volatile std::atomic<size_t>) * num_threads);
+        FREE((void*)_cxl_region, _cxl_region_size);
     }
 
     std::string name() override {
@@ -51,6 +65,8 @@ public:
     }
 
 private:
+    volatile char *_cxl_region;
+    size_t _cxl_region_size;
     // Could use something smaller than size_t here
     volatile std::atomic<int> *level;
     volatile std::atomic<size_t> *last_to_enter;

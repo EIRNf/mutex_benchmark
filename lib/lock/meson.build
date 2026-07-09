@@ -1,21 +1,9 @@
 lock_includes = include_directories('.')
 
-cpp = meson.get_compiler('cpp')
-
-nsync_dep = cpp.find_library('nsync_cpp', required: false)
-
-boost_dep = dependency('boost', static : true, required: false)
-
-lock_lib = library('lock', 
-
-                    ['system_lock.cpp', 'boost_lock.cpp', 'nsync_lock.cpp', 'dijkstra_lock.cpp', 'cpp_std_mutex.cpp', 'bakery_mutex.cpp', 'lamport_lock.hpp', 'bakery_nonatomic_mutex.cpp'], 
-                    dependencies : [boost_dep, nsync_dep],
-                    include_directories : [lock_includes], 
-                    )
-
-
+# Locks are header/inline-only and aggregated by textual #include into
+# lib/utils/bench_utils.cpp's single translation unit (see get_mutex()), so
+# there is nothing here to compile into a separate library -- lock_dep only
+# needs to carry the header search path.
 lock_dep = declare_dependency(
   include_directories : lock_includes,
-  link_with : lock_lib
 )
-

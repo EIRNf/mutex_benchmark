@@ -1,5 +1,6 @@
 #include "../utils/cxl_utils.hpp"
 #include "../utils/emucxl_lib.h"
+#include "../utils/region_layout.hpp"
 
 #include "lock.hpp"
 #include <stdexcept>
@@ -8,15 +9,18 @@
 class DijkstraNonatomicMutex : public virtual SoftwareMutex {
 public:
     void init(size_t num_threads) override {
-        size_t size = (num_threads + 1) * sizeof(bool) * 2 + sizeof(size_t);
-        this->_cxl_region = (volatile char*)ALLOCATE(size);
+        RegionLayout layout;
+        auto k_handle         = layout.reserve<size_t>();
+        auto unlocking_handle = layout.reserve_array<bool>(num_threads + 1);
+        auto c_handle         = layout.reserve_array<bool>(num_threads + 1);
 
-        this->k = (volatile size_t*)&this->_cxl_region[0];
+        this->_cxl_region_size = layout.total_size();
+        this->_cxl_region = (volatile char*)ALLOCATE(_cxl_region_size);
+
+        this->k = RegionLayout::resolve(k_handle, _cxl_region);
         *k = 0;
-        this->unlocking = (volatile bool*)&this->_cxl_region[sizeof(size_t)];
-
-        size_t c_offset = sizeof(bool) * (num_threads + 1) + sizeof(size_t);
-        this->c = (volatile bool*)&this->_cxl_region[c_offset];
+        this->unlocking = RegionLayout::resolve(unlocking_handle, _cxl_region);
+        this->c         = RegionLayout::resolve(c_handle, _cxl_region);
 
         for (size_t i = 0; i < num_threads + 1; i++) {
             unlocking[i] = true;
@@ -35,9 +39,9 @@ public:
             while (!unlocking[*k]) {}
             *k = thread_id+1;
             FENCE();
-            
+
             goto try_again;
-        } 
+        }
         c[thread_id+1] = false;
         FENCE();
         for (size_t j = 1; j < num_threads+1; j++) {
@@ -54,7 +58,7 @@ public:
         c[thread_id+1] = true;
     }
     void destroy() override {
-        FREE((void*)this->_cxl_region, this->num_threads * sizeof(bool) * 2);
+        FREE((void*)this->_cxl_region, this->_cxl_region_size);
     }
 
     std::string name() override {
@@ -63,6 +67,7 @@ public:
 
 private:
     volatile char *_cxl_region;
+    size_t _cxl_region_size;
     volatile bool *unlocking;
     volatile bool *c;
     volatile size_t *k;
