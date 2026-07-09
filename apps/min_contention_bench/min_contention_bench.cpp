@@ -18,6 +18,7 @@
 #include "min_contention_bench.hpp"
 #include "bench_utils.hpp"
 #include "bench_harness.hpp"
+#include "bench_cli.hpp"
 #include "cxl_utils.hpp"
 #include "lock.hpp"
 
@@ -121,63 +122,41 @@ int min_contention_bench(
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 4) {
+    BenchCliOptions opts;
+    opts.num_positional = 3;
+    opts.accept_no_output = true;
+    opts.accept_low_contention = true;
+
+    BenchCliArgs args;
+    if (!parse_bench_cli(argc, argv, opts, args)) {
         fprintf(stderr,
-            "Usage: %s <mutex_name> <num_threads> <run_time_s> <max_noncrit_delay_ns> "
+            "Usage: %s <mutex_name> <num_threads> <run_time_s> "
             "[--csv] [--thread-level] [--no-output] [--low-contention] [--stagger-ms ms]\n",
             argv[0]
         );
         return 1;
     }
 
-    const char* mutex_name            = argv[1];
-    int         num_threads           = atoi(argv[2]);
-    double      run_time_sec          = atof(argv[3]);
-
-    bool csv             = false;
-    bool thread_level    = false;
-    bool no_output       = false;
-    bool low_contention  = false;
-    int  stagger_ms      = 0;
-
-    for (int i = 4; i < argc; ++i) {
-        if (strcmp(argv[i], "--csv") == 0) {
-            csv = true;
-        } else if (strcmp(argv[i], "--thread-level") == 0) {
-            thread_level = true;
-        } else if (strcmp(argv[i], "--no-output") == 0) {
-            no_output = true;
-        } else if (strcmp(argv[i], "--low-contention") == 0) {
-            low_contention = true;
-        } else if (strcmp(argv[i], "--stagger-ms") == 0 && i + 1 < argc) {
-            stagger_ms = atoi(argv[++i]);
-        } else {
-            fprintf(stderr, "Unrecognized flag: %s\n", argv[i]);
-            return 1;
-        }
-    }
-
     cxl_mutex_benchmark_init();
 
-    SoftwareMutex *lock = get_mutex(mutex_name, num_threads);
+    SoftwareMutex *lock = get_mutex(args.mutex_name.c_str(), args.num_threads);
     if (lock == nullptr) {
         fprintf(stderr, "Failed to initialize lock.\n");
         return 1;
-
     }
 
     int result = min_contention_bench(
-        num_threads,
-        run_time_sec,
-        csv,
-        thread_level,
-        no_output,
-        low_contention,
-        stagger_ms,
+        args.num_threads,
+        args.run_time_sec,
+        args.csv,
+        args.thread_level,
+        args.no_output,
+        args.low_contention,
+        args.stagger_ms,
         lock
     );
 
     cxl_mutex_benchmark_exit();
-    
+
     return result;
 }

@@ -33,18 +33,27 @@ def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, criti
         cmd.insert(0, "sudo")
     if Constants.groups:
         cmd.append(str(Constants.groups))
-    if critical_delay != -1:
-        cmd += ["--critical-delay", str(critical_delay)]
-    if noncritical_delay != -1:
-        cmd += ["--noncritical-delay", str(noncritical_delay)]
+
+    # Only max_contention_bench simulates critical/noncritical-section delay;
+    # min_/grouped_contention_bench don't recognize these flags and will
+    # error out if passed.
+    if Constants.bench == 'max':
+        if critical_delay != -1:
+            cmd += ["--critical-delay", str(critical_delay)]
+        if noncritical_delay != -1:
+            cmd += ["--noncritical-delay", str(noncritical_delay)]
+
     if csv:
         cmd.append("--csv")
     if thread_level:
         cmd.append("--thread-level")
-    if rusage:
+
+    # min_contention_bench doesn't support --rusage.
+    if rusage and Constants.bench in ('max', 'grouped'):
         cmd.append("--rusage")
 
-    if Constants.low_contention:
+    # grouped_contention_bench doesn't support staggered/low-contention startup.
+    if Constants.low_contention and Constants.bench in ('max', 'min'):
         cmd.append("--low-contention")
         if Constants.stagger_ms and Constants.stagger_ms > 0:
             cmd += ["--stagger-ms", str(Constants.stagger_ms)]

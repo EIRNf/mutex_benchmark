@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include "bench_utils.hpp"
 #include "bench_harness.hpp"
+#include "bench_cli.hpp"
 #include "cxl_utils.hpp"
 #include "memory.h"
 #include "stdio.h"
@@ -123,58 +124,36 @@ void schedule_flags(std::shared_ptr<std::atomic<bool>*> start_flags, std::shared
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 4) {
-        fprintf(stderr, "Usage: %s <mutex_name> <num_threads> <run_time_per_group> <num_groups> <flags>]\n", argv[0]);
+    BenchCliOptions opts;
+    opts.num_positional = 4;
+    opts.accept_rusage = true;
+
+    BenchCliArgs args;
+    if (!parse_bench_cli(argc, argv, opts, args)) {
+        fprintf(stderr,
+            "Usage: %s <mutex_name> <num_threads> <run_time_per_group> <num_groups> "
+            "[--csv] [--thread-level] [--rusage]\n",
+            argv[0]
+        );
         return 1;
     }
 
-    // First, take in command line arguments
-    char *mutex_name = nullptr;
-    int num_threads = -1;
-    bool csv = false;
-    double run_time = -1;
-    int num_groups =-1;
-    bool rusage = false;
-    bool thread_level = false;
-
-    for (int i = 1; i < argc; i++) 
-    {
-        // First, check if the argument is a flag, which can be placed anywhere.
-        if (strcmp(argv[i], "--csv") == 0 || strcmp(argv[i], "-c") == 0) {
-            csv = true;
-        } else if (strcmp(argv[i], "--thread-level") == 0){
-            thread_level=true;
-        } else if (strcmp(argv[i], "--rusage") == 0) {
-            rusage=true;
-        } else if (mutex_name == nullptr) {
-            mutex_name = argv[i];
-        } else if (num_threads == -1) {
-            num_threads = atoi(argv[i]);
-        } else if (run_time == -1){
-            run_time = atof(argv[i]);
-        } else if (num_groups==-1){
-            num_groups = atoi(argv[i]);
-        } else {
-            fprintf(stderr, "Unrecognized command line argument: %s\n", argv[i]);
-            return 1;
-        }
-    }
-
-    if (num_threads%num_groups!=0){
-        fprintf(stderr, "Number of threads must be evenly divisible by number of groups");
+    if (args.num_threads % args.num_groups != 0) {
+        fprintf(stderr, "Number of threads must be evenly divisible by number of groups\n");
         return 1;
     }
 
     cxl_mutex_benchmark_init();
 
-    SoftwareMutex *lock = get_mutex(mutex_name, num_threads);
+    SoftwareMutex *lock = get_mutex(args.mutex_name.c_str(), args.num_threads);
     if (lock == nullptr) {
         fprintf(stderr, "Failed to initialize lock.\n");
+        return 1;
     }
 
-    int result = grouped_contention_bench(num_threads, run_time, num_groups, csv, rusage, lock);
+    int result = grouped_contention_bench(args.num_threads, args.run_time_sec, args.num_groups, args.csv, args.rusage, lock);
 
     cxl_mutex_benchmark_exit();
-    
+
     return result;
 }

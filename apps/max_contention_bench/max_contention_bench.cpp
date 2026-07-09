@@ -20,6 +20,7 @@
 #include "max_contention_bench.hpp"
 #include "bench_utils.hpp"
 #include "bench_harness.hpp"
+#include "bench_cli.hpp"
 #include "cxl_utils.hpp"
 #include "lock.hpp"
 
@@ -362,85 +363,53 @@ int max_contention_bench(
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 4) {
+    BenchCliOptions opts;
+    opts.num_positional = 3;
+    opts.accept_rusage = true;
+    opts.accept_no_output = true;
+    opts.accept_low_contention = true;
+    opts.accept_critical_delay = true;
+    opts.accept_noncritical_delay = true;
+
+    BenchCliArgs args;
+    if (!parse_bench_cli(argc, argv, opts, args)) {
         fprintf(stderr,
-            "Usage: %s <mutex_name> <num_threads> <run_time_s> <max_noncrit_delay_ns> "
-            "[--csv] [--thread-level] [--no-output] [--low-contention] [--stagger-ms ms]\n",
+            "Usage: %s <mutex_name> <num_threads> <run_time_s> "
+            "[--csv] [--thread-level] [--rusage] [--no-output] [--low-contention] "
+            "[--stagger-ms ms] [--critical-delay N] [--noncritical-delay N]\n",
             argv[0]
         );
         return 1;
     }
 
-
-    const char* mutex_name            = argv[1];
-    int         num_threads           = atoi(argv[2]);
-    double      run_time_sec          = atof(argv[3]);
-
-    bool csv                   = false;
-    bool thread_level          = false;
-    bool no_output             = false;
-    bool low_contention        = false;
-    bool rusage_               = false;
-    int  stagger_ms            = 0;
-    int  max_noncritical_delay = -1;
-    int  max_critical_delay    = -1;
-
-    for (int i = 4; i < argc; ++i) {
-        if (strcmp(argv[i], "--csv") == 0) {
-            csv = true;
-        } else if (strcmp(argv[i], "--thread-level") == 0) {
-            thread_level = true;
-        } else if (strcmp(argv[i], "--rusage") == 0) {
-            rusage_ = true;
-        } else if (strcmp(argv[i], "--no-output") == 0) {
-            no_output = true;
-        } else if (strcmp(argv[i], "--low-contention") == 0) {
-            low_contention = true;
-        } else if (strcmp(argv[i], "--stagger-ms") == 0 && i + 1 < argc) {
-            stagger_ms = atoi(argv[++i]);
-        } else if (strcmp(argv[i], "--noncritical-delay") == 0 && i + 1 < argc) {
-            max_noncritical_delay = atoi(argv[++i]);
-        } else if (strcmp(argv[i], "--critical-delay") == 0 && i + 1 < argc) {
-            max_critical_delay = atoi(argv[++i]);
-        } else {
-            fprintf(stderr, "Unrecognized flag: %s\n", argv[i]);
-            return 1;
-        }
-    }
-
-
     // 1 is the default because it's the exclusive maximum (rand() % delay)
     // so it can't be 0.
-    if (max_noncritical_delay <= 0) {
-        max_noncritical_delay = 1;
-    }
-    if (max_critical_delay <= 0) {
-        max_critical_delay = 1;
-    }
+    int max_critical_delay    = args.critical_delay > 0    ? args.critical_delay    : 1;
+    int max_noncritical_delay = args.noncritical_delay > 0 ? args.noncritical_delay : 1;
 
     cxl_mutex_benchmark_init();
 
-    SoftwareMutex *lock = get_mutex(mutex_name, num_threads);
+    SoftwareMutex *lock = get_mutex(args.mutex_name.c_str(), args.num_threads);
     if (lock == nullptr) {
         fprintf(stderr, "Failed to initialize lock.\n");
         return 1;
     }
 
     int result = max_contention_bench(
-        num_threads,
-        run_time_sec,
-        csv,
-        rusage_,
-        thread_level,
-        no_output,
-        max_noncritical_delay,
+        args.num_threads,
+        args.run_time_sec,
+        args.csv,
+        args.rusage,
+        args.thread_level,
+        args.no_output,
         max_critical_delay,
-        low_contention,
-        stagger_ms,
+        max_noncritical_delay,
+        args.low_contention,
+        args.stagger_ms,
         lock
     );
 
     cxl_mutex_benchmark_exit();
-    
+
     return result;
 }
