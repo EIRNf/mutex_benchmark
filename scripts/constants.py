@@ -286,6 +286,16 @@ class Constants:
         ]
 
         COMBINED_CXL_SET = SOFTWARE_CXL_SET + HARDWARE_CXL_SET
+        MUTEX_SETS = {
+            "sleeper": SLEEPER_SET,
+            "elevator": ELEVATOR_SET,
+            "fencing": FENCING_SET,
+            "base": BASE_SET,
+            "cxl": CXL_SET,
+            "software_cxl": SOFTWARE_CXL_SET,
+            "hardware_cxl": HARDWARE_CXL_SET,
+            "combined_cxl": COMBINED_CXL_SET,
+        }
 
         CONDITIONAL_COMPILATION_MUTEXES = [
             "nsync",
@@ -295,13 +305,18 @@ class Constants:
         ]
 
         EXECUTABLE_NAME = "max_contention_bench"
+        BENCH_EXECUTABLES = {
+            "max": "./build/apps/max_contention_bench/max_contention_bench",
+            "grouped": "./build/apps/grouped_contention_bench/grouped_contention_bench",
+            "min": "./build/apps/min_contention_bench/min_contention_bench",
+        }
         BENCH_N_THREADS = 10
         BENCH_N_SECONDS = 1
 
         N_PROGRAM_ITERATIONS = 10
         DATA_FOLDER          = "./data/generated"
         LOGS_FOLDER          = "./data/logs"
-        EXECUTABLE           = f"./build/apps/{EXECUTABLE_NAME}/{EXECUTABLE_NAME}"
+        EXECUTABLE           = BENCH_EXECUTABLES["max"]
         MULTITHREADED        = False
         THREAD_LEVEL         = False
         SCATTER              = False

@@ -9,14 +9,25 @@ def setup():
     absolute_path = os.path.abspath(__file__)
     parent_directory = os.path.dirname(absolute_path)
     os.chdir(parent_directory + "/..")
-    
-#TODO: Make this more robust. Add option to use existing build directory.
-def build():
-    subprocess.run(f"mkdir build data {Constants.Defaults.DATA_FOLDER} {Constants.Defaults.LOGS_FOLDER}".split()) 
 
-    # Compile
-    result = subprocess.run("meson setup build".split())#, stdout=subprocess.DEVNULL)
-    assert result.returncode == 0, "Meson build failed."
+
+def _run_checked(command, error_message):
+    logger.debug(f"Running command: {command}")
+    result = subprocess.run(command)
+    if result.returncode != 0:
+        raise RuntimeError(error_message)
+
+
+def build():
+    os.makedirs("build", exist_ok=True)
+    os.makedirs("data", exist_ok=True)
+    os.makedirs(Constants.Defaults.DATA_FOLDER, exist_ok=True)
+    os.makedirs(Constants.Defaults.LOGS_FOLDER, exist_ok=True)
+
+    meson_setup_cmd = ["meson", "setup", "build"]
+    if os.path.exists("build/meson-info/meson-info.json"):
+        meson_setup_cmd.append("--reconfigure")
+    _run_checked(meson_setup_cmd, "Meson setup failed.")
     configure_command = "meson configure build --optimization 3".split()
 
     cpp_args = []
@@ -33,7 +44,5 @@ def build():
     configure_command.append(f'-Dcpp_args=[{",".join(cpp_args)}]')
     print(configure_command)
 
-    result = subprocess.run(configure_command)
-    assert result.returncode == 0, "Configuration failed." #, stdout=subprocess.DEVNULL)
-    result = subprocess.run("meson compile -C build".split())#, stdout=subprocess.DEVNULL)
-    assert result.returncode == 0, "Compilation failed."
+    _run_checked(configure_command, "Meson configuration failed.")
+    _run_checked("meson compile -C build".split(), "Meson compilation failed.")

@@ -6,6 +6,79 @@ import logging
 from .constants import Constants
 from .logger    import logger
 
+
+def _ordered_dedupe(values):
+    return list(dict.fromkeys(values))
+
+
+def _resolve_mutex_names(args, parser):
+    if args.all:
+        mutex_names = list(Constants.Defaults.MUTEX_NAMES)
+    elif args.set:
+        mutex_names = []
+        for set_name in args.set:
+            mutex_set = Constants.Defaults.MUTEX_SETS.get(set_name)
+            if mutex_set is None:
+                available_sets = ", ".join(sorted(Constants.Defaults.MUTEX_SETS.keys()))
+                parser.error(f"Unknown mutex set '{set_name}'. Available sets: {available_sets}")
+            mutex_names.extend(mutex_set)
+        mutex_names = _ordered_dedupe(mutex_names)
+    elif args.include:
+        mutex_names = list(args.include)
+    else:
+        mutex_names = [
+            n for n in Constants.Defaults.MUTEX_NAMES
+            if n not in args.exclude
+        ]
+
+    if args.exclude:
+        for excluded_mutex_name in args.exclude:
+            if excluded_mutex_name in mutex_names:
+                mutex_names.remove(excluded_mutex_name)
+
+    if args.include:
+        for included_mutex_name in args.include:
+            if included_mutex_name not in mutex_names:
+                mutex_names.append(included_mutex_name)
+
+    return mutex_names
+
+
+def _apply_iter_config(args):
+    if args.iter_threads is not None:
+        Constants.iter_variable_name = "threads"
+        Constants.iter_range = args.iter_threads
+        Constants.iter = True
+    elif args.iter_critical_delay is not None:
+        Constants.iter_variable_name = "critical_delay"
+        Constants.iter_range = args.iter_critical_delay
+        Constants.iter = True
+    elif args.iter_noncritical_delay is not None:
+        Constants.iter_variable_name = "noncritical_delay"
+        Constants.iter_range = args.iter_noncritical_delay
+        Constants.iter = True
+    else:
+        Constants.iter = False
+
+    if Constants.iter:
+        Constants.iter_range[1] += 1  # End inclusive range
+
+
+def _validate_grouped_constraints(args, parser):
+    if args.bench == 'grouped':
+        if args.groups is None or args.groups <= 0:
+            parser.error("--groups must be provided and > 0 when --bench grouped")
+        if not Constants.iter:
+            parser.error("--bench grouped currently requires an --iter-* sweep")
+
+
+def _resolve_executable_for_bench(bench_name):
+    executable = Constants.Defaults.BENCH_EXECUTABLES.get(bench_name)
+    if executable is None:
+        raise NotImplementedError(f"Unknown executable: {bench_name}")
+    return executable
+
+
 def init_args():
     parser = argparse.ArgumentParser(
         prog='MutexTest',
@@ -112,45 +185,7 @@ def init_args():
 
     args = parser.parse_args()
 
-    Constants.mutex_names = []
-    if args.all:
-        Constants.mutex_names = Constants.Defaults.MUTEX_NAMES
-    elif args.set:
-        Constants.mutex_names=[]
-        if ('sleeper' in args.set ):
-            Constants.mutex_names.extend(Constants.Defaults.SLEEPER_SET)
-        if ('elevator' in args.set):
-            Constants.mutex_names.extend(Constants.Defaults.ELEVATOR_SET)
-        if ('fencing' in args.set):
-            Constants.mutex_names.extend(Constants.Defaults.FENCING_SET)
-        if ('base' in args.set):
-            Constants.mutex_names.extend(Constants.Defaults.BASE_SET)
-        if ('cxl' in args.set):
-            Constants.mutex_names.extend(Constants.Defaults.CXL_SET)
-        if ('software_cxl' in args.set):
-            Constants.mutex_names.extend(Constants.Defaults.SOFTWARE_CXL_SET)
-        if ('hardware_cxl' in args.set):
-            Constants.mutex_names.extend(Constants.Defaults.HARDWARE_CXL_SET)
-        if ('combined_cxl' in args.set):
-            Constants.mutex_names.extend(Constants.Defaults.COMBINED_CXL_SET)
-
-    elif args.include:
-        Constants.mutex_names = args.include
-    else:  
-        Constants.mutex_names = [
-            n for n in Constants.Defaults.MUTEX_NAMES
-            if n not in args.exclude
-        ]
-    
-    if args.exclude:
-        for excluded_mutex_name in args.exclude:
-            if excluded_mutex_name in Constants.mutex_names:
-                Constants.mutex_names.remove(excluded_mutex_name)
-    
-    if args.include:
-        for included_mutex_name in args.include:
-            if included_mutex_name not in Constants.mutex_names:
-                Constants.mutex_names.append(included_mutex_name)
+    Constants.mutex_names = _resolve_mutex_names(args, parser)
 
     Constants.bench_n_threads      = args.threads
     Constants.bench_n_seconds      = args.seconds
@@ -161,23 +196,8 @@ def init_args():
     # Constants.threads_step = args.threads_step
     Constants.rusage = args.rusage
 
-    if args.iter_threads != None:
-        Constants.iter_variable_name = "threads"
-        Constants.iter_range = args.iter_threads
-        Constants.iter = True
-    elif args.iter_critical_delay != None:
-        Constants.iter_variable_name = "critical_delay"
-        Constants.iter_range = args.iter_critical_delay
-        Constants.iter = True
-    elif args.iter_noncritical_delay != None:
-        Constants.iter_variable_name = "noncritical_delay"
-        Constants.iter_range = args.iter_noncritical_delay
-        Constants.iter = True
-    else:
-        Constants.iter = False
-        
-    if Constants.iter:
-        Constants.iter_range[1] += 1 # End inclusive range
+    _apply_iter_config(args)
+    _validate_grouped_constraints(args, parser)
 
     Constants.data_folder = args.data_folder
     logger.debug(Constants.data_folder)
@@ -191,14 +211,7 @@ def init_args():
     Constants.stdev_scale = args.stdev
     # Constants.numactl = args.numactl
 
-    if (args.bench=='max'):
-        Constants.executable = "./build/apps/max_contention_bench/max_contention_bench"
-    elif (args.bench=='grouped'):
-        Constants.executable = "./build/apps/grouped_contention_bench/grouped_contention_bench"
-    elif (args.bench=='min'):
-        Constants.executable = "./build/apps/min_contention_bench/min_contention_bench"
-    else:
-        raise NotImplementedError(f"Unknown executable: {args.bench}")
+    Constants.executable = _resolve_executable_for_bench(args.bench)
     
     Constants.max_n_points = args.max_n_points
 

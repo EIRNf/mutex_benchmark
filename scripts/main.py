@@ -42,6 +42,8 @@ def main():
         run_experiment_iter()
     elif Constants.bench == 'min' or Constants.bench == 'max':
         run_experiment_lock_level()
+    elif Constants.bench == 'grouped':
+        run_experiment_iter()
     else:
         raise NotImplementedError(f"Benchmark '{Constants.bench}' not recognized")
 

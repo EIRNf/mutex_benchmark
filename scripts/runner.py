@@ -3,6 +3,7 @@
 from .constants import Constants
 from .logger    import logger
 import subprocess
+import os
 
 def get_data_file_name(mutex_name, i, **kwargs):
     name_root = f"{Constants.data_folder}/{mutex_name}-{i}-{Constants.bench}"
@@ -51,17 +52,27 @@ def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, criti
     logger.debug(f"Bench command: {cmd}")
     return cmd
 
+
+def _run_command_to_csv(command):
+    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace")
+        raise RuntimeError(f"Benchmark command failed: {command}\n{stderr}")
+    return result.stdout
+
+
 def run_experiment_lock_level_single_threaded():
     for i in range(Constants.n_program_iterations):
         for mutex_name in Constants.mutex_names:
             logger.info(f"{mutex_name=} | {i=}")
             data_file_name = get_data_file_name(mutex_name, i)
-            subprocess.run(["rm", "-f", data_file_name])
+            if os.path.exists(data_file_name):
+                os.remove(data_file_name)
             command = get_command(mutex_name, csv=True, thread_level=False)
-            thread = subprocess.run(command, stdout=subprocess.PIPE)
-            csv_data = thread.stdout
+            csv_data = _run_command_to_csv(command)
             with open(data_file_name, "wb") as data_file:
                 data_file.write(csv_data)
+
 
 def run_experiment_iter_single_threaded():
     for i in range(Constants.n_program_iterations):
@@ -70,9 +81,9 @@ def run_experiment_iter_single_threaded():
             for mutex_name in Constants.mutex_names:
                 logger.info(f"{mutex_name=:<24} | {i=:0>2} | {extra_command_args=}")
                 data_file_name = get_data_file_name(mutex_name, i, **extra_command_args)
-                subprocess.run(["rm", "-f", data_file_name])
+                if os.path.exists(data_file_name):
+                    os.remove(data_file_name)
                 command = get_command(mutex_name, csv=True, thread_level=Constants.thread_level, **extra_command_args)
-                thread = subprocess.run(command, stdout=subprocess.PIPE)
-                csv_data = thread.stdout
+                csv_data = _run_command_to_csv(command)
                 with open(data_file_name, "wb") as data_file:
                     data_file.write(csv_data)
