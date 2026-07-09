@@ -22,7 +22,7 @@ hardware requirements.
 | `tree_cas_elevator` | O(log n) | O(log n) | 1 TAS (waker) | O(n·CL) | Yes | Tree-order |
 | `tree_bl_elevator` | O(log n) | O(log n) | **0** | O(n·CL) | Yes | Tree-order |
 | `tree_lamport_elevator` | O(log n) | O(log n) | **0** | O(n·CL) | Yes | Tree-order |
-| `net_elevator` | O(log²W) | O(n) | log²W × fetch\_xor | O(W²log²W + n·CL) | Yes | Elevator |
+| `net_elevator` | O(log²W) | O(n·W) | log²W × fetch\_xor | O(W²log²W + n·CL) | Yes | Elevator |
 | `bitonic_cas` | O(log²W) | O(n) | log²W × fetch\_add | O(W·log²W + n·CL) | Yes (stack) | ≈FIFO |
 | `bitonic_bl` | O(n·log²W) | O(n) | **0** | O(n·W·log²W + n·CL) | Yes (stack) | ≈FIFO |
 | `bitonic_lamport` | O(n·log²W)‡ | O(n) | **0** | O(n·W·log²W + n·CL) | Yes (stack) | ≈FIFO |
@@ -45,7 +45,9 @@ hardware requirements.
 \* `mcs_nca` nodes not CL-padded — false sharing possible.  
 † `linear_lamport_elevator` grant flags not CL-padded.  
 ‡ O(1) fast path when uncontended; degrades to O(n) per balancer under contention.  
-§ Seq designs are currently broken under multi-threaded contention.
+§ Seq (`seq_*`) designs are broken: they probabilistically **violate mutual
+exclusion** at ≥4 threads (verified 2026-07 with a breach-detecting critical
+section). LW (`lw_*`) designs hang at ≥2 threads. Neither should be benchmarked.
 
 ---
 
@@ -88,7 +90,8 @@ pass through to acquire the lock.
 | **O(1) handoff** | `mcs`, `mcs_nca` | O(1) | Write to successor's node (1 CAS if tail) |
 | **O(log n) tree walk** | `tree_*_elevator` | O(log n) | Root-to-leaf sibling check + ring dequeue |
 | **O(n) linear scan** | `linear_*_elevator` | O(n) | Cyclic scan of waiting[] flags |
-| **O(n) step-property scan** | `net_elevator`, `bitonic_*`, `periodic_*` | O(n) | Scan all ThreadMeta, use (wire\_dist, round, tid) ordering |
+| **O(n) step-property scan** | `bitonic_*`, `periodic_*` | O(n) | Scan all ThreadMeta, use (wire\_dist, round, tid) ordering |
+| **O(n·W) floor sweep** | `net_elevator` | O(n·W) | Sweeps up to 2(W−1) floors, each probing all n ThreadMeta slots (`find_floor_winner`) |
 
 The new bitonic/periodic locks and the existing counting network locks share
 the same O(n) unlock scan. This is the primary scaling bottleneck — every
@@ -244,23 +247,32 @@ or when structural regularity is valued.
 | Most portable (no atomics, no fences under SC) | `bitonic_bakery` or `periodic_bakery` | Pure loads and stores |
 | Strict FIFO with O(1) unlock | `wf_bitonic_cas` or `wf_periodic_cas` | Waiting-filter, O(1) phase-bit unlock, no extra atomics |
 | O(1) unlock + distributed lock | `wf_bitonic_cas` or `wf_periodic_cas` | Waiting-filter, best balance of throughput and unlock cost |
-| O(1) unlock + single bottleneck | `seq_bitonic_cas` | Sequenced, global fetch\_add linearization (currently broken) |
+
+(`seq_*` was previously recommended for "O(1) unlock + single bottleneck" —
+removed: the implementation violates mutual exclusion at ≥4 threads, see §7.4.
+A plain ticket lock — or `skew_*`, which is behaviorally a network-fronted
+ticket lock — covers that niche until `seq_*` is fixed.)
 
 ---
 
 ## 7. Linearizable Counting Lock Designs
 
-Three designs from Herlihy, Shavit, Waarts (1996) "Linearizable Counting
-Networks" and Aspnes, Herlihy, Shavit (1994) "Counting Networks," implemented
-as mutual exclusion locks with the project's `SoftwareMutex` interface.
+Designs derived from Herlihy, Shavit, Waarts (1996) "Linearizable Counting
+Networks," Aspnes, Herlihy, Shavit (1994) "Counting Networks," and Lynch,
+Shavit, Shvartsman, Touitou (PODC 1996) "Counting Networks Are Practically
+Linearizable," implemented as mutual exclusion locks with the project's
+`SoftwareMutex` interface: LW (Design A), Seq (Design B), WF (Design C), and
+the Skew/RSkew filter locks (see `LINEARIZABLE_COUNTING_ANALYSIS.md` §4/§4b
+for full design descriptions and implementation-status caveats).
 
 ### 7.1 Design Overview
 
-| Design | Lock O() | Unlock O() | Extra Atomics | Key Mechanism | Source |
-|---|---|---|---|---|---|
-| **A: Wire-Indexed (LW)** | O(log²W) | O(1) pred / O(W) fallback | 0 | Per-wire slot arrays + step-property prediction | Novel |
-| **B: Sequenced (Seq)** | O(log²W) + 1 fetch\_add | O(1) guaranteed | 1 fetch\_add (global\_seq) | Counting network + global ticket + slot array | Aspnes et al. §5.1 |
-| **C: Waiting-Filter (WF)** | O(log²W) + O(1) phase check | **O(1) always** | 0 | Counting network + n-element phase-bit array | Herlihy-Shavit-Waarts §3 |
+| Design | Lock O() | Unlock O() | Extra Atomics | Key Mechanism | Source | Status (verified 2026-07) |
+|---|---|---|---|---|---|---|
+| **A: Wire-Indexed (LW)** | O(log²W) | O(1) pred / O(W) fallback | 0 | Per-wire slot arrays + step-property prediction | Novel | **BROKEN — hangs at ≥2T** |
+| **B: Sequenced (Seq)** | O(log²W) + 1 fetch\_add | O(1) guaranteed | 1 fetch\_add (global\_seq) | Counting network + global ticket + slot array | Aspnes et al. §5.1 | **BROKEN — mutual-exclusion breach at ≥4T** |
+| **C: Waiting-Filter (WF)** | O(log²W) + O(1) phase check | **O(1) always** | 0 | Counting network + n-element phase-bit array | Herlihy-Shavit-Waarts §3 | Correct at 2/4/8T |
+| **Skew/RSkew** | O(log²W) + (n−1) fetch\_add + ticket | O(1) fetch\_add | n−1 + 1 fetch\_add | Network + vestigial skew filter + **plain ticket lock** (see `LINEARIZABLE_COUNTING_ANALYSIS.md` §4b) | HSW §4 (aspirational; not actually realized) | Correct at 2/4/8T (as ticket locks) |
 
 ### 7.2 Theoretical Foundation
 
@@ -307,51 +319,85 @@ unlock. ABA prevention: phase toggles every n tokens per slot. Under
 practical linearizability (c2 ≤ 2·c1), the wait is near-zero because
 predecessors complete before successors check.
 
-### 7.4 Experimental Results
+### 7.4 Experimental Results (measured 2026-07)
 
-Platform: Apple M-series (aarch64), max contention benchmark (1s per run,
-median of 3 reps). Throughput in operations/second.
+Platform: Apple M-series (aarch64), max contention benchmark, `--thread-level`
+mode (breach-detecting critical section), 1s per run, median of 3 reps.
+Throughput in operations/second.
+
+Correctness sweep first (all 52 counting-network variants + baselines, 2/4/8
+threads, 6s hang timeout): every `bitonic_*`, `periodic_*`, `wf_*`, `skew_*`,
+`rskew_*` variant plus `net_elevator` and `hmcs` passed with no breach; all 8
+`lw_*` variants hung; all 8 `seq_*` variants breached mutual exclusion and/or
+hung at ≥4T. `seq_*` and `lw_*` are therefore excluded from the throughput
+table — a lock that admits two threads at once produces meaningless numbers.
 
 | Lock | 1T ops/s | 1T vs MCS | 2T ops/s | 2T vs MCS | 4T ops/s | 4T vs MCS | 8T ops/s | 8T vs MCS |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `mcs` | 9.18M | 1.00x | 3.95M | 1.00x | 1.71M | 1.00x | 15.0K | 1.00x |
-| `exp_spin` | 7.42M | 0.81x | 6.84M | 1.73x | 5.80M | 3.40x | 6.97M | 464.67x |
-| `ticket` | 9.96M | 1.09x | 3.25M | 0.82x | 934.4K | 0.55x | 189.4K | 12.63x |
-| `bitonic_cas` | 8.69M | 0.95x | 3.19M | 0.81x | 1.78M | 1.04x | 57.3K | 3.82x |
-| `periodic_cas` | 8.20M | 0.89x | 3.29M | 0.83x | 1.71M | 1.00x | 52.6K | 3.51x |
-| `seq_bitonic_cas` | 7.83M | 0.85x | 4.34M | 1.10x | 2.36M | 1.38x | 115.6K | 7.71x |
-| `seq_periodic_cas` | 8.30M | 0.90x | 4.33M | 1.10x | 721.8K | 0.42x | 64.9K | 4.33x |
-| `wf_bitonic_cas` | 9.78M | 1.07x | 6.13M | 1.55x | 2.50M | 1.46x | 111.3K | 7.42x |
-| `wf_periodic_cas` | 9.32M | 1.02x | 5.54M | 1.40x | 2.52M | 1.48x | 58.0K | 3.87x |
+| `mcs` | 24.86M | 1.00x | 4.92M | 1.00x | 5.99M | 1.00x | 775.2K | 1.00x |
+| `spin` | 26.62M | 1.07x | 19.76M | 4.01x | 9.00M | 1.50x | 5.15M | 6.64x |
+| `exp_spin` | 19.29M | 0.78x | 19.53M | 3.97x | 10.73M | 1.79x | 6.12M | 7.90x |
+| `ticket` | 24.72M | 0.99x | 5.53M | 1.12x | 4.39M | 0.73x | 714.9K | 0.92x |
+| `linear_lamport_elevator` | 24.45M | 0.98x | 5.93M | 1.21x | 2.59M | 0.43x | 762.2K | 0.98x |
+| `tree_lamport_elevator` | 21.05M | 0.85x | 6.62M | 1.34x | 1.73M | 0.29x | 98.4K | 0.13x |
+| `net_elevator` | 17.51M | 0.70x | 5.93M | 1.20x | 2.90M | 0.48x | 187.0K | 0.24x |
+| `hmcs` | 19.03M | 0.77x | 3.68M | 0.75x | 1.21M | 0.20x | 370.0K | 0.48x |
+| `bitonic_cas` | 21.85M | 0.88x | 5.83M | 1.18x | 2.61M | 0.44x | 83.9K | 0.11x |
+| `periodic_cas` | 22.23M | 0.89x | 6.02M | 1.22x | 2.63M | 0.44x | 53.7K | 0.07x |
+| `bitonic_bakery` | 19.80M | 0.80x | 5.37M | 1.09x | 2.01M | 0.34x | 172.0K | 0.22x |
+| `wf_bitonic_cas` | 23.38M | 0.94x | 9.00M | 1.83x | 2.79M | 0.47x | 211.1K | 0.27x |
+| `wf_periodic_cas` | 23.73M | 0.95x | 6.97M | 1.42x | 1.21M | 0.20x | 146.5K | 0.19x |
+| `wf_bitonic_lamport` | 21.62M | 0.87x | 7.77M | 1.58x | 2.65M | 0.44x | 256.2K | 0.33x |
+| `skew_bitonic_cas` | 20.50M | 0.82x | 6.50M | 1.32x | 2.66M | 0.44x | 241.1K | 0.31x |
+| `rskew_bitonic_cas` | 21.80M | 0.88x | 6.28M | 1.28x | 1.81M | 0.30x | 95.0K | 0.12x |
+
+> Historical note: an earlier version of this table included `seq_bitonic_cas`
+> / `seq_periodic_cas` with numbers that "beat MCS at 2T/4T" while other
+> sections of this document simultaneously called `seq_*` broken. Both were
+> half-right: `seq_*` runs fast *because* it sometimes admits two threads at
+> once. Those measurements predate the breach detector and have been removed.
 
 ### 7.5 Analysis
 
-**Key findings:**
+**Key findings (2026-07 data):**
 
-1. **WF (Waiting-Filter) is the best new design.** `wf_bitonic_cas` achieves
-   1.46x MCS throughput at 4T and 7.42x at 8T. The phase-bit chain adds
-   negligible overhead in practice because predecessors complete before
-   successors check (practical linearizability from the Lynch et al. result).
-   Note: Elevator sync variants were removed from linearizable designs because
-   `BnElevatorSync` uses hardware CAS/XCHG (MCS-style queue), contradicting
-   the goal of software-only balancer synchronization.
+1. **Unfair spin locks dominate raw throughput at every contention level**
+   (`spin`/`exp_spin`, 4-8x MCS at 2T and 8T) because they do no ordering, no
+   scan, and no handoff — at the cost of unbounded unfairness. Every ordered
+   lock in this set pays a large 8T penalty on this platform.
 
-2. **Seq (Sequenced) performs well at low contention.** `seq_bitonic_cas`
-   beats MCS at 2T (1.10x) and 4T (1.38x). The global `fetch_add` bottleneck
-   hurts at higher thread counts but the counting network pre-distributes
-   arrivals effectively.
+2. **WF (Waiting-Filter) is the best of the linearizable counting designs and
+   the only one that is correct.** `wf_bitonic_cas` is the strongest ordered
+   lock at 2T (1.83x MCS) and stays mid-pack at 4T/8T. Earlier claims that WF
+   beats MCS at 4T/8T are not reproduced by the current measurement — MCS
+   leads all counting-network locks at 4T and 8T in this run. (Elevator sync
+   variants were removed from the linearizable designs because `BnElevatorSync`
+   uses hardware CAS/XCHG, contradicting software-only balancer sync.)
 
-3. **O(n) unlock locks (bitonic/periodic) are competitive.** Despite O(n)
-   unlock scans, `bitonic_cas` and `periodic_cas` match or exceed MCS at 4T
-   due to distributed lock-path contention.
+3. **The O(n) unlock scan is the scaling bottleneck for the base
+   bitonic/periodic locks**: competitive through 4T (~0.44x MCS), then a
+   50-100x drop at 8T (54-84K ops/s) as every release rescans all thread
+   metadata under full contention.
 
-4. **Exp\_spin dominates absolute throughput** at high thread counts due to
-   its unfair nature (no ordering, no scan) but lacks FIFO fairness.
+4. **Skew/RSkew perform like what they are — ticket locks with extra
+   network/filter overhead** (see §7.1 and `LINEARIZABLE_COUNTING_ANALYSIS.md`
+   §4b): close to `ticket` at 2T, below it at 4T/8T by roughly the cost of the
+   dead filter's n−1 fetch_adds.
 
-5. **MCS collapses at 8T on this platform** (15K ops/s vs 9.18M at 1T),
-   likely due to contention collapse on the tail pointer with Apple Silicon's
-   memory model. All ordered locks show similar degradation.
+5. **MCS degrades but does not collapse at 8T** in the current measurement
+   (775K ops/s, best-in-class among ordered locks). The 15K "contention
+   collapse" in the earlier table was not reproduced; treat platform-specific
+   8T behavior as noisy (this machine has 8+ cores of mixed
+   performance/efficiency types, and the benchmark oversubscribes the
+   performance cores).
 
-6. **LW (Wire-Indexed) is broken** under multi-thread contention. The
-   designated-waker protocol doesn't handle multi-iteration re-entry correctly.
-   Needs redesign to remove the waker dependency.
+6. **LW (Wire-Indexed) is broken** — hangs at ≥2T, confirmed empirically. The
+   most defensible root cause from code audit is the per-wire slot ring
+   overwrite losing a delayed waiter's wakeup pointer (Assumption A4 in
+   `LINEARIZABLE_COUNTING_ANALYSIS.md`), not the waker protocol per se. Needs
+   an occupancy guard or redesign before it can be benchmarked.
+
+7. **Seq (Sequenced) is broken — it violates mutual exclusion** at ≥4T
+   (probabilistically; reproduced 2-3 times out of 5 runs at 4T). The design
+   is sound on paper; the implementation's handoff/slot-reuse path has a race.
+   Until fixed, any Seq throughput numbers are meaningless.

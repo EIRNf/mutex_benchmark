@@ -33,18 +33,34 @@ All networks have width **w** (must be a power of 2).
 
 | Lock Variant | Network Traverse | Lock (total) | Unlock | Space |
 |---|---|---|---|---|
-| **bitonic_{sync}** | O(log²w) × T_sync | O(log²w × T_sync + n) | O(n) scan | O(w · log²w + n) |
-| **periodic_{sync}** | O(log²w) × T_sync | O(log²w × T_sync + n) | O(n) scan | O(w · log²w + n) |
-| **wf_bitonic_{sync}** | O(log²w) × T_sync | O(log²w × T_sync) + O(1) phase check | **O(1)** phase-bit set | O(n·CL) |
-| **wf_periodic_{sync}** | O(log²w) × T_sync | O(log²w × T_sync) + O(1) phase check | **O(1)** phase-bit set | O(n·CL) |
-| **seq_bitonic_cas** | O(log²w) × O(1) | O(log²w) + 1 fetch_add | **O(1)** slot lookup | O(n·CL) |
-| **seq_periodic_cas** | O(log²w) × O(1) | O(log²w) + 1 fetch_add | **O(1)** slot lookup | O(n·CL) |
+| **bitonic_cas / periodic_cas** | O(log²w) × O(1) | O(log²w + n) | O(n) scan | O(w · log²w + n) |
+| **bitonic_{bl,lamport,elevator,bakery}** | O(log²w) × T_sync | O(log²w × T_sync + n) | O(n) scan | O(w · log²w · n) |
+| **periodic_{bl,lamport,elevator,bakery}** | O(log²w) × T_sync | O(log²w × T_sync + n) | O(n) scan | O(w · log²w · n) |
+| **wf_bitonic_{sync}** | O(log²w) × T_sync | O(log²w × T_sync) + O(1) phase check | **O(1)** phase-bit set | O(n·CL) + network |
+| **wf_periodic_{sync}** | O(log²w) × T_sync | O(log²w × T_sync) + O(1) phase check | **O(1)** phase-bit set | O(n·CL) + network |
+| **seq_bitonic_cas** | O(log²w) × O(1) | O(log²w) + 1 fetch_add | **O(1)** slot lookup | O(n·CL) + network |
+| **seq_periodic_cas** | O(log²w) × O(1) | O(log²w) + 1 fetch_add | **O(1)** slot lookup | O(n·CL) + network |
+| **skew_* / rskew_*** | O(log²w) + (n−1) fetch_add | O(log²w + n) + ticket spin | **O(1)** fetch_add | O(n·w) toggles + network |
 
 Where **T_sync** is the per-balancer synchronisation cost from the table above.
+The space term for the non-CAS software-sync variants is O(w·log²w·n), not
+O(w·log²w + n): every one of the Θ(w·log²w) balancers carries its own O(n)
+per-thread state (flags/arrays/queue nodes), so the per-balancer O(n) factor
+multiplies the balancer count.
 
-**Note**: Design A (Wire-Indexed / `lw_*`) and Design B (Sequenced / `seq_*`)
-are currently broken under multi-threaded contention. Only Design C
-(Waiting-Filter / `wf_*`) is fully functional across all sync policies.
+**Verification status (measured 2026-07, Apple M-series, breach-detecting
+critical section at 2/4/8 threads — see `ELEVATOR_SET_COMPARISON.md` §7.4):**
+- All 10 base `bitonic_*`/`periodic_*` variants: **correct** at all thread counts.
+- All 8 `wf_*` (Design C, Waiting-Filter): **correct** at all thread counts.
+- All 16 `skew_*`/`rskew_*`: **correct** (but see the note in
+  `LINEARIZABLE_COUNTING_ANALYSIS.md` §4b — the skew filter is vestigial and
+  ordering is enforced by an embedded ticket lock).
+- All 8 `lw_*` (Design A, Wire-Indexed): **broken — deadlock/hang** at every
+  thread count ≥ 2. Do not benchmark.
+- All 8 `seq_*` (Design B, Sequenced): **broken — violates mutual exclusion**
+  (breach detector fires) and occasionally hangs at ≥ 4 threads. Earlier
+  reports of `seq_*` "performing well" were measured before the breach
+  detector existed and are invalid. Do not benchmark.
 
 ---
 
@@ -121,11 +137,14 @@ final balancers.  Base: Block[2] = single balancer.
 
 ### 5. Periodic[w] (Herlihy Fig 12.18)
 
-**What**: A counting network made of log(k) identical Block[w] stages
+**What**: A counting network made of log₂(w) identical Block[w] stages
 connected in sequence.  Every stage is structurally identical — the
 network is *periodic*.
 
-**Construction**: Periodic[2k] = Block[2k]^(log k).
+**Construction**: Periodic[w] = Block[w]^(log₂ w) — log₂(w) blocks, each of
+depth log₂(w), giving the classic log²(w) total depth (Dowd-Perl-Rudolph-Saks,
+as presented in Aspnes-Herlihy-Shavit §4). This matches the implementation
+(`PeriodicNetwork::build()` computes `num_blocks = log2(width)`).
 
 **Step Property**: Same as Bitonic[w] — achieved through iterative
 refinement across repeated blocks.
@@ -154,6 +173,13 @@ must be serialised**.  This can be achieved through:
 - **Mechanism**: Per-balancer Burns-Lamport mutual exclusion (N-thread safe)
 - **Trade-off**: No RMW needed, but O(n) doorway per balancer access
 - **Lock names**: `bitonic_bl`, `periodic_bl`
+- **Caution (code audit 2026-07)**: `BurnsLamportMutex::trylock()`
+  (`burns_lamport_lock.hpp`) has only one `Fence()`, while the same algorithm
+  hardened as `BnWakerLock::trylock()` (`bitonic_networks.hpp`) carries two
+  additional fences at the wait-loop→fast-flag-check and release points. This
+  asymmetry is a plausible (unconfirmed) weak-memory race on ARM for the `*_bl`
+  variants; no breach was observed in 2/4/8-thread testing on Apple Silicon,
+  but the fence placement should be reconciled between the two copies.
 
 ### C. Software Mutex — Lamport Fast Lock
 - **ISAs**: Same as Burns-Lamport
@@ -196,15 +222,21 @@ must be serialised**.  This can be achieved through:
 | File | Contents |
 |---|---|
 | `lib/lock/bitonic_networks.hpp` | All network + lock implementations (base counting locks) |
-| `lib/lock/linearizable_counting_lock.hpp` | Linearizable counting lock designs (WF, Seq, LW) |
+| `lib/lock/linearizable_counting_lock.hpp` | Linearizable counting lock designs (WF, Seq, LW, Skew, RSkew) |
+| `lib/lock/net_elevator_lock.hpp` | `net_elevator` — elevator lock with a hand-rolled bitonic-topology network assigning "floors" (CAS-only balancers) |
+| `lib/lock/HMCS_lock.cpp` | `hmcs` — hierarchical MCS lock (unrelated to counting networks, listed for registry completeness) |
 | `lib/utils/bench_utils.cpp` | Factory registration (both CXL and standard paths) |
 | `BITONIC_NETWORKS_COMPLEXITY.md` | This document |
 | `LINEARIZABLE_COUNTING_ANALYSIS.md` | Theoretical analysis of linearizable counting lock designs |
-| `ELEVATOR_SET_COMPARISON.md` | Cross-lock overhead comparison |
+| `ELEVATOR_SET_COMPARISON.md` | Cross-lock overhead comparison + measured results |
 
 ## Lock Name Registry
 
-Base counting locks (bitonic_networks.hpp):
+All names below are registered in `lib/utils/bench_utils.cpp`. Every family is
+the full cross product {bitonic, periodic} × {cas, bl, lamport, bakery} (the
+base family additionally has an `elevator` sync variant).
+
+Base counting locks (bitonic_networks.hpp) — all correct:
 ```
 bitonic_cas        bitonic_bl         bitonic_lamport
 bitonic_elevator   bitonic_bakery
@@ -214,8 +246,14 @@ periodic_elevator  periodic_bakery
 
 Linearizable counting locks (linearizable_counting_lock.hpp):
 ```
-wf_bitonic_cas     wf_bitonic_bl      wf_bitonic_lamport    wf_bitonic_bakery
-wf_periodic_cas    wf_periodic_bl     wf_periodic_lamport   wf_periodic_bakery
-seq_bitonic_cas    seq_periodic_cas   (Seq: broken under contention)
-lw_bitonic_cas     lw_periodic_cas    (LW: broken under contention)
+wf_*   (correct):  wf_bitonic_{cas,bl,lamport,bakery}    wf_periodic_{cas,bl,lamport,bakery}
+seq_*  (BROKEN — mutual-exclusion violation at >=4T):
+                   seq_bitonic_{cas,bl,lamport,bakery}   seq_periodic_{cas,bl,lamport,bakery}
+lw_*   (BROKEN — hangs at >=2T):
+                   lw_bitonic_{cas,bl,lamport,bakery}    lw_periodic_{cas,bl,lamport,bakery}
+skew_* / rskew_* (correct; behaviorally ticket locks — see LINEARIZABLE_COUNTING_ANALYSIS.md §4b):
+                   skew_bitonic_{cas,bl,lamport,bakery}  skew_periodic_{cas,bl,lamport,bakery}
+                   rskew_bitonic_{cas,bl,lamport,bakery} rskew_periodic_{cas,bl,lamport,bakery}
 ```
+
+Related (own files, see File Map): `net_elevator`, `hmcs`.

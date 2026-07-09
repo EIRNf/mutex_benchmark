@@ -2,7 +2,7 @@
 
 ## 1. Paper Summaries
 
-### 1.1 Lynch, Shavit, Shvartsman (1996) — "Counting Networks Are Practically Linearizable"
+### 1.1 Lynch, Shavit, Shvartsman, Touitou (PODC 1996) — "Counting Networks Are Practically Linearizable"
 
 **Core result**: Standard counting networks (bitonic, periodic) are only *quiescently
 consistent*, not linearizable. However, under bounded-time execution assumptions
@@ -194,10 +194,17 @@ O(n) to O(W). Under practical linearizability, prediction hits often → O(1) av
 **Key limitation**: Non-contiguous per-pair rounds break the `next_to_serve` prediction
 under high concurrency. Fallback to O(W) sweep. Still much better than O(n).
 
-> **Status (current implementation):** Design A is **broken** under multi-thread
-> contention. The designated-waker protocol deadlocks when multiple threads
-> compete across iterations. 2T+ benchmarks show 0 throughput. The `lw_*` type
-> aliases exist in code but should not be benchmarked.
+> **Status (verified 2026-07):** Design A is **broken** under multi-thread
+> contention — all 8 `lw_*` variants hang (no progress within timeout) at
+> every thread count ≥ 2 on the max-contention benchmark. Static analysis of
+> the waker protocol itself did not turn up a deadlock; the most defensible
+> root-cause candidate is the **per-wire slot ring overflow** (Assumption A4
+> below made real): registration overwrites `wire_slots[wire][round % cap]`
+> unconditionally with no occupancy check, so when a wire accumulates more
+> than `rounds_cap_` outstanding rounds (a delayed thread repeatedly losing
+> the doorway while others keep landing on its wire), a newer registration
+> silently clobbers the earlier waiter's `spin_addr`, permanently losing its
+> wakeup. The `lw_*` type aliases exist in code but must not be benchmarked.
 
 ### Design B: Sequenced Counting Lock (Guaranteed O(1) Unlock)
 
@@ -230,9 +237,18 @@ contention, this becomes a serialization bottleneck. However, the counting netwo
 distributes arrival times, so threads hit global_seq at staggered intervals,
 reducing contention on it compared to a pure ticket lock.
 
-> **Status (current implementation):** Design B is **broken** under multi-thread
-> contention — similar deadlock issues as Design A. The `seq_*` type aliases
-> exist in code but should not be benchmarked.
+> **Status (verified 2026-07):** Design B is **broken**, but not the way
+> previously described (it has no designated-waker protocol to deadlock — that
+> machinery only exists in Design A). Under a breach-detecting critical
+> section, all 8 `seq_*` variants probabilistically **violate mutual
+> exclusion** at ≥ 4 threads (reproduced: 2-3 breaches out of 5 runs at 4T for
+> `seq_bitonic_cas`/`seq_periodic_cas`, plus occasional hangs). Any historical
+> throughput numbers for `seq_*` predate the breach detector and are invalid —
+> a lock that admits two threads at once posts excellent but meaningless
+> throughput. The design itself (network + global fetch_add + slot handoff)
+> remains sound on paper; the defect is in the implementation's
+> handoff/slot-reuse path and needs a race-hunt before `seq_*` can be
+> benchmarked.
 
 **Comparison to `cn_array_lock`** (removed): Architecturally similar — both use
 a global counter for contiguous tokens + slot array for O(1) unlock. The
@@ -241,12 +257,80 @@ last-layer balancer's counter was the global sequence. Design B uses a RECURSIVE
 network (deeper, better contention distribution at scale) with a SEPARATE global
 counter. The cn_array implementation has been removed from the codebase.
 
-### Design C: True Linearizable Network (Herlihy-Shavit-Waarts Construction)
+### Design C: Waiting-Filter (WF) — `wf_*`
+
+(Consistent with the "Design C" naming used in `ELEVATOR_SET_COMPARISON.md` §7.)
+
+**Architecture**:
+- Standard bitonic/periodic network (unchanged) produces token
+  v = (round × width) + wire
+- An n-element circular **phase-bit array**, where phase(v) = ⌊v/n⌋ mod 2
+
+**Lock path**: traverse the network to obtain token v, then wait until
+`phase_bits[(v−1) % n] == phase(v−1)` — i.e. wait for the immediate
+predecessor token to have *unlocked*. Token 0 (and each thread's first
+acquisition of a "fresh" slot generation) proceeds immediately.
+
+**Unlock path** (guaranteed O(1)): a single store —
+`phase_bits[v % n] = phase(v)` — plus a fence.
+
+Because entry for token v strictly requires token v−1 to have completed its
+unlock, critical-section occupancy is fully serialized by construction. The
+phase toggle every n tokens prevents slot-generation aliasing; note that under
+the forced serialization the aliasing scenario is structurally unreachable
+anyway, so the toggle is belt-and-braces rather than load-bearing.
+
+> **Status (verified 2026-07):** all 8 `wf_*` variants pass the
+> breach-detecting max-contention benchmark at 2/4/8 threads. This is the only
+> linearizable design in this file that is both implemented and correct.
+
+### Design D: True Linearizable Network (Herlihy-Shavit-Waarts Construction)
 
 **Not implemented.** The Ω(n) lower bound for nonblocking linearizable counting
 makes this design impractical compared to Design B (which achieves linearization
 with one atomic). A blocking construction is possible but adds complexity and
 latency at each balancer without clear benefit over Design B.
+
+### 4b. Skew / Reverse-Skew filter locks — `skew_*`, `rskew_*` (what the code actually does)
+
+The doc-comments above `SkewFilterCountingLock` and
+`ReverseSkewFilterCountingLock` (`lib/lock/linearizable_counting_lock.hpp`)
+describe Herlihy-Shavit-Waarts's skew and reverse-skew filter networks —
+comparison-free filter layers that are supposed to produce a linearizable
+token ordering directly from topology, with the skew variant admitting
+starvation and the reverse-skew variant wait-free.
+
+**The current implementation does not realize that design.** What the code
+actually does per `lock()`:
+
+1. Traverse the underlying bitonic/periodic counting network (real contention
+   distribution, output kept as a seed).
+2. Run the seed through `num_threads − 1` "filter layers," each performing one
+   `fetch_add` on a toggle array — real atomic work — mutating a local `row`
+   variable.
+3. **Discard `row`.** It is never read again.
+4. Take a ticket from a global `fetch_add(global_seq_)` and spin until
+   `now_serving_` matches. `unlock()` is `now_serving_.fetch_add(1)`.
+
+Steps 3-4 mean ordering is enforced entirely by an ordinary **ticket lock**;
+the filter contributes only overhead (n−1 extra atomic RMWs per acquisition).
+Consequences:
+
+- `skew_*` and `rskew_*` are **behaviorally identical** — their only code
+  difference is whether the discarded `row` is incremented or decremented.
+- They are **correct** mutexes (ticket locks trivially are; verified 2026-07
+  at 2/4/8 threads), and linearizable via the global ticket, but the
+  linearization point is the `fetch_add`, not the filter network — so they do
+  not demonstrate the HSW filter constructions their comments cite.
+- The toggle array is allocated with plain `new[]`/`delete[]` rather than the
+  codebase's `ALLOCATE`/`FREE` (CXL-aware) macros, so under CXL/NUMA builds
+  it lives outside the CXL region every other lock in the file uses.
+
+**Backlog options**: either (a) complete the filter so its output actually
+determines ordering (implementing HSW §4 for real), or (b) delete the dead
+filter loop and rename these to what they are (network-fronted ticket locks),
+or (c) keep them as-is for measuring "network + ticket" hybrid overhead —
+but the doc-comments in the source should be softened in any case.
 
 ---
 
@@ -264,14 +348,21 @@ latency at each balancer without clear benefit over Design B.
 
 ### 5.1 When to Use Which
 
-- **Design A**: When lock-path contention must be minimized (no extra atomic).
-  Good for moderate contention where the step property holds well.
+The table above describes the designs *as designed*. As implemented (see the
+status notes in §4), only Design C (WF) and the base O(n) locks are usable:
 
-- **Design B**: When unlock latency must be guaranteed O(1). The extra
-  fetch_add on the lock path is a small price for deterministic unlock.
-  Preferred for high-throughput scenarios where O(n) scan is the bottleneck.
+- **Design A** (*theory*): when lock-path contention must be minimized (no
+  extra atomic), moderate contention where the step property holds well.
+  *Implementation currently hangs — do not use.*
 
-- **Current O(n)**: When n is small (≤16) or when W ≈ n (so O(W) ≈ O(n) anyway).
+- **Design B** (*theory*): when unlock latency must be guaranteed O(1). The
+  extra fetch_add on the lock path is a small price for deterministic unlock.
+  *Implementation currently violates mutual exclusion — do not use.*
+
+- **Design C (WF)**: the working choice for O(1) unlock + linearizable
+  ordering today.
+
+- **Current O(n)**: when n is small (≤16) or when W ≈ n (so O(W) ≈ O(n) anyway).
   The simpler code may be faster for small thread counts due to lower constant factors.
 
 ### 5.2 The Step Property Under Concurrency
@@ -286,15 +377,17 @@ tokens, giving amortized O(1 + log²W/W) per unlock — essentially O(1) for lar
 
 ### 5.3 Preemption Sensitivity
 
-Both designs handle preemption correctly via the waker protocol:
+As designed, both A and B were meant to tolerate preemption:
 - If the predicted successor hasn't registered (preempted mid-traversal):
   - Design A: falls back to wire sweep, then waker flag
-  - Design B: brief spin, then waker flag
-- The preempted thread self-starts when it eventually registers and finds the
-  waker flag set
+  - Design B: bounded handoff spin (`HANDOFF_SPINS`), after which the
+    successor's own spin loop self-resolves once `now_serving_` catches up
+    (the implementation has no waker flag — only Design A has waker machinery)
 
-Correctness is unaffected. Performance degrades gracefully: one preemption adds
-O(W) cost to Design A or O(spin) cost to Design B, not O(n).
+In practice this section describes intent, not verified behavior: Design A's
+implementation hangs under contention (the slot-ring overwrite defeats the
+fallback — see §4), and Design B's implementation has a mutual-exclusion race.
+Only the base O(n) locks and Design C currently degrade gracefully as described.
 
 ---
 
@@ -342,7 +435,9 @@ The per-wire slot infrastructure works regardless of which network produced the
    the same linearization more efficiently (Design B).
 
 4. **Per-wire indexing** (Design A) reduces the unlock scan from O(n) threads to
-   O(W) wires without any extra atomic. This is the most novel contribution.
+   O(W) wires without any extra atomic. This is the most novel contribution —
+   on paper. The current implementation is broken (hangs; see §4 status note),
+   so the idea remains unvalidated empirically.
 
 5. **The step property IS the key** — it enables wire-based organization and
    successor prediction. Linearizability refines the prediction accuracy but
@@ -350,3 +445,9 @@ The per-wire slot infrastructure works regardless of which network produced the
 
 6. **OS preemption** is the practical enemy of all these optimizations. The waker
    protocol is essential for correctness under arbitrary scheduling.
+
+7. **Implementation status (verified 2026-07, breach-detecting benchmark at
+   2/4/8 threads)**: Design C (WF) — correct, all 8 variants. Design A (LW) —
+   hangs at ≥2T. Design B (Seq) — violates mutual exclusion at ≥4T.
+   Skew/RSkew — correct, but behaviorally ticket locks (§4b); they do not
+   exercise the HSW filter constructions they cite.
