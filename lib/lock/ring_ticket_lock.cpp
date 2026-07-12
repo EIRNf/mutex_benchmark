@@ -1,91 +1,66 @@
 #include "lock.hpp"
+#include "../utils/cxl_utils.hpp"
 #include <stdexcept>
 #include <atomic>
+#include <new>
 
-// #define RING_START (start&modulo_mask)
-// #define RING_END (end&modulo_mask)
-#define SENTINEL ((std::atomic_bool*)1)
-
-// This mutex is bad and deadlocks.
+// Ring ticket lock — Anderson-style array queue lock.
+//
+// Rewritten 2026-07-12. The previous implementation (see git history)
+// combined a ring queue with a designated-waker protocol and a racy
+// `empty` flag; its own header comment said "This mutex is bad and
+// deadlocks", and it failed ~1 in 5 breach-detected runs. The intended
+// structure — a ticket counter indexing a ring of per-slot grant flags —
+// is exactly Anderson's array-based queue lock (T. Anderson, IEEE TPDS
+// 1990), which needs no waker machinery:
+//
+//   lock():   my = tail.fetch_add(1); spin until ring[my % size] is set;
+//             clear it (consume for the next generation).
+//   unlock(): set ring[(my + 1) % size].
+//
+// Each waiter spins on its own cache line (like MCS, without per-node
+// pointers). FIFO. Correctness needs size >= num_threads so tickets in
+// flight (<= 1 per thread) never alias a slot; init rounds up to a power
+// of two >= num_threads + 1.
 class RingTicketMutex : public virtual SoftwareMutex {
 public:
     void init(size_t num_threads) override {
-        // We round up to the nearest power of 2 for extra space and to make
-        // it easier to divide.
-        // The array size has to be at least 1 more than the number of threads 
-        // so that start == end means the array is empty and not all the way full 
-        size_t nearest_power_of_2 = 1;
-        while (nearest_power_of_2 < num_threads + 1) {
-            nearest_power_of_2 *= 2;
-        }
-        num_threads = nearest_power_of_2;
+        size_t size = 1;
+        while (size < num_threads + 1) size *= 2;
+        ring_size_ = size;
+        modulo_mask_ = size - 1;
 
-        this->num_threads = num_threads;
-        this->modulo_mask = num_threads - 1;
-        // For some reason this needs two casts to work.
-        local_nodes =  (std::atomic<volatile bool*>*)malloc(sizeof(std::atomic<volatile bool*>) * num_threads);
-        for (size_t i = 0; i < num_threads; i++) {
-            local_nodes[i] = nullptr; // TODO use atomic_init?
+        region_size_ = size * CL;
+        region_ = (volatile char*)ALLOCATE(region_size_);
+        for (size_t i = 0; i < size; i++) {
+            *get_slot(i) = false;
         }
+        *get_slot(0) = true;   // lock starts free: ticket 0 may enter
+        next_ticket_.store(0, std::memory_order_relaxed);
     }
 
     void lock(size_t thread_id) override {
         (void)thread_id;
-        // printf("%ld: Locking...\n", thread_id);
-
-        this->has_priority = false;
-        local_nodes[end.fetch_add(1)&modulo_mask] = &this->has_priority;
-        if (trylock_internal()) {
-            // We are the designated waker.
-            unsigned spins = 0;
-            while (!this->has_priority && !empty) {
-                LockSpinWait(spins);
-            }
-            empty = false;
-            unlock_internal();
-        } else {
-            unsigned spins = 0;
-            while (!this->has_priority) { // TODO: memory ordering
-                LockSpinWait(spins);
-            }
+        size_t my = next_ticket_.fetch_add(1, std::memory_order_relaxed);
+        volatile bool* slot = get_slot(my & modulo_mask_);
+        unsigned spins = 0;
+        while (!*slot) {
+            LockSpinWait(spins);
         }
-        this->has_priority = false;
-        // printf("%ld: Locked\n", thread_id);
+        Fence();
+        *slot = false;             // consume for the slot's next generation
+        my_ticket_ = my;
     }
 
     void unlock(size_t thread_id) override {
-        // printf("%ld: Unlocking...\n", thread_id);
         (void)thread_id;
-        // As soon as this happens, start == end if the queue is empty.
-        // todo: these don't need to be protected by the lock? (switch to atomic_flag probably)
-        size_t my_ring_index = start.fetch_add(1);
-        local_nodes[my_ring_index&modulo_mask] = nullptr;
-        
-        // If we naively made this check and then returned from the function if the queue was empty,
-        // it would create a race condition where this check happens as local_nodes[start] is set.
-        volatile bool *first_node = local_nodes[start&modulo_mask];
-        if (first_node != nullptr) {
-            *first_node = true;
-        } else {
-            empty = true;
-        }
-        // printf("%ld: Unlocked\n", thread_id);
-    }
-
-    inline bool trylock_internal() {
-        return !internal_lock.test_and_set();
-    }
-
-    inline void lock_internal() {
-        while (internal_lock.test_and_set(std::memory_order_acquire));
-    }
-
-    inline void unlock_internal() {
-        internal_lock.clear(std::memory_order_release);
+        Fence();
+        *get_slot((my_ticket_ + 1) & modulo_mask_) = true;
+        Fence();
     }
 
     void destroy() override {
-        free((void*)local_nodes);
+        FREE((void*)region_, region_size_);
     }
 
     std::string name() override {
@@ -93,24 +68,20 @@ public:
     }
 
 private:
-    // static volatile std::atomic_flag internal_lock;
-    // This variable is also a spinlock set to nullptr when in use.
-    // TODO: which approach is better: nullptr swap or using another variable?
-    static std::atomic_flag internal_lock;
-    static std::atomic_bool empty;
-    static std::atomic<volatile bool*>* local_nodes;
-    static std::atomic<size_t> start;
-    static std::atomic<size_t> end;
-    static thread_local volatile bool has_priority;
-    static size_t num_threads; // Guaranteed to be power of 2.
-    static size_t modulo_mask; // num_threads - 1
+    static constexpr size_t CL = std::hardware_destructive_interference_size;
+
+    volatile bool* get_slot(size_t idx) const {
+        return (volatile bool*)&region_[idx * CL];
+    }
+
+    std::atomic<size_t> next_ticket_{0};
+    volatile char* region_ = nullptr;
+    size_t region_size_ = 0;
+    size_t ring_size_ = 0;
+    size_t modulo_mask_ = 0;
+    // The holder's ticket, written under the lock and read at unlock by
+    // the same thread. thread_local so the class needn't be singleton.
+    static thread_local size_t my_ticket_;
 };
-std::atomic_flag RingTicketMutex::internal_lock = ATOMIC_FLAG_INIT;
-// Double pointer prevents false sharing?
-std::atomic<volatile bool*>* RingTicketMutex::local_nodes;
-std::atomic<size_t> RingTicketMutex::start = 0;
-std::atomic<size_t> RingTicketMutex::end = 0;
-thread_local volatile bool RingTicketMutex::has_priority = false;
-size_t RingTicketMutex::num_threads; // Guaranteed to be power of 2.
-size_t RingTicketMutex::modulo_mask;
-std::atomic_bool RingTicketMutex::empty = true;
+
+thread_local size_t RingTicketMutex::my_ticket_ = 0;

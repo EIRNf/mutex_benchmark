@@ -49,13 +49,20 @@ public:
         (void)thread_id; // Unused
 
         if (my_node->next == nullptr) {
+            // CAS with a LOCAL expected copy. This previously passed
+            // &my_node directly, and compare_exchange writes the observed
+            // value back through the expected pointer on failure — so a
+            // failed CAS silently repointed my_node at the current TAIL
+            // (another thread's live node). The unlocker then granted
+            // through and free()d that foreign node: mutual exclusion
+            // breaches and use-after-free (reproduced 5/5 at 4T pre-fix).
+            MQNode* expected = my_node;
             if (std::atomic_compare_exchange_strong(
                     lock_,
-                    &my_node,
+                    &expected,
                     nullptr
                 )) {
                     try_free_my_node();
-                    // printf("%ld: Successfully std::atomic_compare_exchanged, unlocked\n", thread_id);
                     return;
                 }
             // If MCSMutex::lock_ is not pointing to this node, but this node's pointer in null,
@@ -83,7 +90,7 @@ public:
     }
 
     std::string name() override {
-        return "mcs";
+        return "mcs_malloc";
     }
 private:
     // Do these need to be volatile?
