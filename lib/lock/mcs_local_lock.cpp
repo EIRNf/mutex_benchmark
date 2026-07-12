@@ -34,9 +34,9 @@ public:
             my_node.locked = true;
             predecessor->next.store(&my_node);
             // printf("%ld: Waiting for unlock...\n", thread_id);
+            unsigned spins = 0;
             while (my_node.locked) {
-                // printf("%ld: Waiting for node unlock...\n", thread_id);
-                // Busy wait
+                LockSpinWait(spins);
             }
         }
         // printf("%ld: Locked\n", thread_id);
@@ -58,9 +58,9 @@ public:
             // that can only mean there is another node in the process of setting (between lock_.exchange and predecessor->next.store)
             // This almost never happens.
             // printf("Waiting for successor...\n");
+            unsigned spins = 0;
             while (my_node.next.load() == nullptr) {
-                // printf(".");
-                // Busy wait (should this return to the start?)
+                LockSpinWait(spins);
             }
         }
         my_node.next.load()->locked = false;

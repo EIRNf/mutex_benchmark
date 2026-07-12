@@ -139,7 +139,7 @@ private:
         }
 
         pred->next.store(I, std::memory_order_release);
-        while (I->successor_must_wait.load(std::memory_order_acquire)) std::this_thread::yield();
+        { unsigned spins = 0; while (I->successor_must_wait.load(std::memory_order_acquire)) LockSpinWait(spins); }
 
         //acquire the parent if we were told to do so
         if (I->tail_when_spliced.load(std::memory_order_acquire) && L->parent) {
@@ -167,7 +167,7 @@ private:
         } else {
             QNode* expected = I;
             if (L->tail.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel)) return;
-            do { succ = I->next.load(std::memory_order_acquire); } while (!succ);
+            { unsigned spins = 0; do { succ = I->next.load(std::memory_order_acquire); if (succ) break; LockSpinWait(spins); } while (true); }
             succ->tail_when_spliced.store(true, std::memory_order_release);
             succ->successor_must_wait.store(false, std::memory_order_release);
         }

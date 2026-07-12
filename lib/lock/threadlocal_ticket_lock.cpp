@@ -33,8 +33,9 @@ public:
         std::atomic_bool **local_nodes = lock_internal();
         local_nodes[thread_id] = &(this->has_priority);
         unlock_internal(local_nodes);
+        unsigned spins = 0;
         while (!this->has_priority) {
-            // Busy wait
+            LockSpinWait(spins);
         }
     }
 

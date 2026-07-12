@@ -48,7 +48,8 @@ public:
         // Edit the tail to add ourself in.
         local_node->locked = true;
         old_tail->next = local_node;
-        while (local_node->locked);
+        unsigned spins = 0;
+        while (local_node->locked) { LockSpinWait(spins); }
     }
 
     void unlock(size_t thread_id) override {
@@ -61,8 +62,9 @@ public:
             }
         }
 
+        unsigned spins = 0;
         while (local_node->next == nullptr) {
-            // spin_delay_exponential(); // Busy wait
+            LockSpinWait(spins);
         }
 
         local_node->next.load()->locked = false;

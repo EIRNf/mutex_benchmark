@@ -39,7 +39,8 @@ public:
         node = (struct Node*)ALLOCATE(sizeof(struct Node));
         node->successor_must_wait = true;
         struct Node *predecessor = tail.exchange(node, std::memory_order_relaxed);
-        while (predecessor->successor_must_wait);
+        unsigned spins = 0;
+        while (predecessor->successor_must_wait) { LockSpinWait(spins); }
         FREE((void*)predecessor, sizeof(struct Node));
     }
 

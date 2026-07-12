@@ -185,12 +185,13 @@ private:
         uint64_t my_status;
 
         // spins until your status changes from WAIT
+        unsigned spins = 0;
         do {
             my_status = I->status.load(std::memory_order_acquire);
             if (my_status != WAIT) {
                 break;
             }
-            std::this_thread::yield();
+            LockSpinWait(spins);
         } while (true);
         
         if (my_status == ACQUIRE_PARENT) {
@@ -226,10 +227,11 @@ private:
             }
             
             // if the tail wasn't cleared, there is a successor
+            unsigned spins = 0;
             do {
                 succ = I->next.load(std::memory_order_acquire);
                 if (succ != nullptr) break;
-                std::this_thread::yield();
+                LockSpinWait(spins);
             } while (true);
             
             succ->status.store(ACQUIRE_PARENT, std::memory_order_release);

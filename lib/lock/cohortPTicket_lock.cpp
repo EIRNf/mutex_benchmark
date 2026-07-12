@@ -66,8 +66,9 @@ static void destroy_tkt(tkt* l) { free(l); }
 
 static unsigned long tkt_acquire(tkt* l) {
     auto me = l->request.fetch_add(1, std::memory_order_acquire);
+    unsigned spins = 0;
     while (l->grant.load(std::memory_order_acquire) != me) {
-        sched_yield();
+        LockSpinWait(spins);
     }
     return me;
 }
@@ -109,8 +110,9 @@ static void destroy_ptkt(ptkt* g) {
 static unsigned long ptkt_acquire(ptkt* g) {
     auto me = g->request.fetch_add(1, std::memory_order_acquire);
     auto slot = (int)(me & (GRANT_SLOTS - 1));
+    unsigned spins = 0;
     while (g->grants[slot].grant.load(std::memory_order_acquire) != (int)me) {
-        for (int i = 0; i < PAUSE_CYCLES; i++) {  }
+        LockSpinWait(spins);
     }
     return me;
 }

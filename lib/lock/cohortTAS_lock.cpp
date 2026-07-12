@@ -48,13 +48,15 @@ static void ctas_acquire(cohort_tas* c, size_t thread_id) {
     int node = int(thread_id % NUMA_NODES);
     
     // acquire the local cohort lock
+    unsigned spins = 0;
     while (c->lnodes[node].llock.test_and_set(std::memory_order_acquire)) {
-        sched_yield();
+        LockSpinWait(spins);
     }
 
     // acquire global lock
+    unsigned gspins = 0;
     while (c->glock.test_and_set(std::memory_order_acquire)) {
-        sched_yield();
+        LockSpinWait(gspins);
     }
 }
 

@@ -56,14 +56,14 @@ public:
         if (pred) { 
             local_qnode.locked.store(true, std::memory_order_relaxed);
             pred->next.store(&local_qnode, std::memory_order_release);
-            while (local_qnode.locked.load(std::memory_order_acquire)) std::this_thread::yield();
+            { unsigned spins = 0; while (local_qnode.locked.load(std::memory_order_acquire)) LockSpinWait(spins); }
         } else {
             global_qnode.next = nullptr;
             CMCSQNode* gpred = global_tail.exchange(&global_qnode, std::memory_order_acquire);
             if (gpred) {
                 global_qnode.locked.store(true, std::memory_order_relaxed);
                 gpred->next.store(&global_qnode, std::memory_order_release);
-                while (global_qnode.locked.load(std::memory_order_acquire)) std::this_thread::yield();
+                { unsigned spins = 0; while (global_qnode.locked.load(std::memory_order_acquire)) LockSpinWait(spins); }
             }
             cohort.batch_count.store(0, std::memory_order_relaxed);
         }
@@ -93,8 +93,9 @@ public:
         if (!gsucc) {
             CMCSQNode* expected = &global_qnode;
             if (!global_tail.compare_exchange_strong(expected, nullptr, std::memory_order_release, std::memory_order_relaxed)) {
-                while (!(gsucc = global_qnode.next.load(std::memory_order_acquire))) 
-                    {std::this_thread::yield();}
+                unsigned spins = 0;
+                while (!(gsucc = global_qnode.next.load(std::memory_order_acquire)))
+                    { LockSpinWait(spins); }
             }
         }
 
@@ -105,8 +106,9 @@ public:
         if (!succ) {
             CMCSQNode* expected = &local_qnode;
             if (cohort.local_tail.compare_exchange_strong(expected, nullptr, std::memory_order_release, std::memory_order_relaxed)) return;
-            while (!(succ = local_qnode.next.load(std::memory_order_acquire))) 
-                {std::this_thread::yield();}
+            unsigned spins = 0;
+            while (!(succ = local_qnode.next.load(std::memory_order_acquire)))
+                { LockSpinWait(spins); }
         }
         succ->locked.store(false, std::memory_order_release);
     }

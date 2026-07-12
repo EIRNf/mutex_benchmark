@@ -52,8 +52,9 @@ public:
             // If MCSMutex::lock_ is not pointing to this node, but this node's pointer in null,
             // that can only mean there is another node in the process of setting (between lock_.exchange and predecessor->next.store)
             // This almost never happens.
+            unsigned spins = 0;
             while (my_node.next.load() == nullptr) {
-                // Busy wait (should this return to the start?)
+                LockSpinWait(spins);
             }
         }
 

@@ -21,8 +21,9 @@ public:
     void lock(size_t thread_id) override {
         (void)thread_id;
         size_t my_ticket = next_ticket->fetch_add(1, std::memory_order_relaxed);
+        unsigned spins = 0;
         while (now_serving->load(std::memory_order_acquire) != my_ticket) {
-            spin_delay_sched_yield();
+            LockSpinWait(spins);
         }
     }
 

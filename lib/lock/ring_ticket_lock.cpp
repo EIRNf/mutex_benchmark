@@ -37,14 +37,16 @@ public:
         local_nodes[end.fetch_add(1)&modulo_mask] = &this->has_priority;
         if (trylock_internal()) {
             // We are the designated waker.
-            while (!this->has_priority && !empty) { 
-                // spin_delay_exponential(); // Busy wait
+            unsigned spins = 0;
+            while (!this->has_priority && !empty) {
+                LockSpinWait(spins);
             }
             empty = false;
             unlock_internal();
         } else {
+            unsigned spins = 0;
             while (!this->has_priority) { // TODO: memory ordering
-                // spin_delay_exponential(); // Busy wait
+                LockSpinWait(spins);
             }
         }
         this->has_priority = false;

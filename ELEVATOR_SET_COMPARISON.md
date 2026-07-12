@@ -682,3 +682,51 @@ as directional; the 16T lead reproduces across both hb variants. On a
 machine where sched_yield were unavailable or slower (or with pinned
 threads and real preemption), the heartbeat's targeting should matter
 proportionally more.
+
+### 7.10 Yield Port to the Hardware-Atomic Locks (2026-07-12)
+
+`LockSpinWait` (lock.hpp) extended to the queue/ticket family's lock-layer
+waits: `mcs`, `mcs_nca`, `mcs_local`, `mcs_malloc`, `mcs_sleeper` (unlock
+successor wait), `clh`, `hclh`, `hmcs`, `cohortMCS`, `cohortTicket`,
+`cohortPTicket`, `cohortTAS`, `ticket`, `exp_ticket`,
+`threadlocal_ticket`, `ring_ticket`. Two conversion kinds:
+- **pure spins → spin-then-yield** (mcs family, clh, threadlocal/ring
+  ticket): gains oversubscription survival;
+- **yield-every-iteration → spin-then-yield** (ticket, cohort*, hmcs,
+  hclh): removes a syscall per spin iteration on short waits while keeping
+  the oversubscription behavior.
+Untouched by design: `spin`/`exp_spin`/`hard_spin`/`wait_spin` (unfair
+baselines; no handoff chain to stall), `hbo` (backoff *is* its design),
+short internal doorway TAS loops.
+
+Measured (1s × 3 reps, same session, breach detector armed):
+
+| Lock | 4T | 8T | 12T (was, pre-port) | 16T |
+|---|---:|---:|---:|---:|
+| `mcs` | ~2.0M | ~0.6M | **~215K (was 3-15K — 15-70x)** | ~52K |
+| `clh` | ~1.9M | ~0.7M | ~265K | ~60K |
+| `hclh` | ~1.1M | ~0.9M | **~300K (best ordered)** | ~55K |
+| `hmcs` | ~1.2M | ~0.8M | ~245K | — |
+| `cohortTicket` | ~1.5M | ~2.7M | ~235K | — |
+| `ticket` | ~1.8M | ~0.5M | ~205K | ~52K |
+| `wf_bitonic_cas` | ~1.6M | ~0.4M | ~188K | — |
+| `hb_bitonic_cas` | ~2.0M | ~0.5M | ~208K | ~62K |
+| `spin` (unfair) | ~8.7M | ~9.4M | ~9.8M | — |
+
+With every ordered lock now yielding, the 12T field compresses into a
+~180-300K band — the scheduler, not the lock protocol, sets the ceiling
+once threads exceed cores, and hierarchical queue locks (`hclh`) edge the
+rest. MCS at 4-8T remains the best strict-FIFO lock, and now no longer
+falls off a cliff beyond that.
+
+**Pre-existing defects found while validating the port (NOT regressions —
+reproduced with the unpatched code):**
+1. `mcs_malloc` **violates mutual exclusion** (breach detector fires 5/5 at
+   4T and 8T). Its `name()` also mislabels it as "mcs". Needs the same
+   class of race-hunt applied to seq_* earlier.
+2. `ring_ticket` fails intermittently (~1 in 5 runs at 4-8T).
+3. `cohortMCS` **hangs at 12T+** (oversubscription deadlock/livelock;
+   passes at 4-8T). Suspect the cohort-threshold handoff when all threads
+   share one NUMA cohort.
+All three verified against stashed pre-port sources; tracked here as open
+bugs.
