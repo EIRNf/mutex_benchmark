@@ -49,6 +49,15 @@ public:
                 // Busy wait for lower-priority thread to give up.
             }
         }
+        // Fence between the doorway (in_contention scan) and the fast-flag
+        // read-modify-write, and again before publishing our doorway exit.
+        // Without these, a weakly-ordered CPU (ARM) can reorder the *fast
+        // read above the final in_contention reads (two threads both see
+        // fast == false and both become leader) or sink the *fast write
+        // below the in_contention[thread_id] = false store. The hardened
+        // sibling of this algorithm, BnWakerLock::trylock() in
+        // bitonic_networks.hpp, has carried both fences all along.
+        Fence();
         bool leader;
         if (!*fast) {
             *fast = true;
@@ -56,6 +65,7 @@ public:
         } else {
             leader = false;
         }
+        Fence();
         in_contention[thread_id] = false;
         return leader;
     }

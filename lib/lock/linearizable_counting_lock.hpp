@@ -98,6 +98,16 @@
   #define LcSpinHint() ((void)0)
 #endif
 
+// Long-wait spin: pure spinning collapses once runnable threads outnumber
+// the (performance) cores — a spinner burns the cycles its predecessor in
+// the handoff chain needs to reach its own unlock. Yielding every ~1K
+// iterations is unreachable on the fast path (uncontended waits finish in
+// far fewer spins) and restores progress under saturation. Ordering and
+// correctness are untouched: who gets the lock next is already fixed by
+// the token protocol; this only affects when the waiter's core is ceded.
+#define LcSpinWait(spins) \
+    do { if (((++(spins)) & 1023) == 0) sched_yield(); else LcSpinHint(); } while (0)
+
 
 // =============================================================================
 // SECTION 1: Wire-Indexed Counting Lock  (Design A)
@@ -117,8 +127,14 @@ public:
         width_ = 1;
         while (width_ < target) width_ *= 2;
 
-        // Per-wire capacity: enough for all concurrent waiters per wire + margin
-        rounds_cap_ = std::max((size_t)16, 4 * num_threads / width_ + 4);
+        // Per-wire capacity. Must exceed the maximum number of rounds that
+        // can be live (WAITING or SERVED-awaiting-cleanup) on one wire at
+        // once. Unserved tokens total at most num_threads (one per thread),
+        // and in the worst case all of them land on a single wire, so the
+        // old heuristic 4n/W + 4 could overflow and let a registration
+        // silently clobber a still-waiting round. 2n leaves margin for
+        // SERVED breadcrumbs awaiting sweep cleanup.
+        rounds_cap_ = std::max((size_t)16, 2 * num_threads);
 
         network_.build(width_, num_threads);
 
@@ -148,11 +164,11 @@ public:
             get_wire_head(w)->next_round = 0;
         }
 
-        // Init all wire slots as unoccupied
+        // Init all wire slots as empty
         for (size_t w = 0; w < width_; w++) {
             for (size_t r = 0; r < rounds_cap_; r++) {
                 auto* s = get_wire_slot(w, r);
-                s->occupied = false;
+                s->state = SLOT_EMPTY;
                 s->tid = 0;
                 s->round = 0;
                 s->spin_addr = nullptr;
@@ -180,33 +196,56 @@ public:
         meta->wire  = wire;
         meta->round = round;
 
-        // 2. Register in per-wire slot
+        // 2. Register in per-wire slot (rounds_cap_ >= 2n guarantees the
+        //    slot for `round` cannot still be live for round - rounds_cap_).
         auto* slot = get_wire_slot(wire, round % rounds_cap_);
         slot->tid       = thread_id;
         slot->round     = round;
         slot->spin_addr = &local_grant;
         Fence();
-        slot->occupied = true;
+        slot->state = SLOT_WAITING;
         Fence();
 
-        // 3. Designated-waker protocol
-        if (waker_lock_.trylock(thread_id)) {
-            Fence();
-            while (!local_grant && !*waker_flag_) { LcSpinHint(); }
-            *waker_flag_ = false;
-            Fence();
-            waker_lock_.unlock();
-            // Entered via waker flag: clear our slot and advance wire head
-            // so unlock() sweep doesn't miss future waiters on this wire.
-            if (!local_grant) {
-                slot->occupied = false;
-                // Advance wire_heads past our round (we're self-served)
-                auto* head = get_wire_head(wire);
-                if (head->next_round <= round)
-                    head->next_round = round + 1;
+        // 3. Wait for one of two grant paths:
+        //    (a) the current holder's unlock() grants us via spin_addr, or
+        //    (b) the lock is free-floating (*waker_flag_ set because an
+        //        unlock found no visible waiter) and we claim it through
+        //        the waker lock.
+        //    Every waiter keeps re-polling the flag. The previous protocol
+        //    tried the waker lock exactly once and then spun passively on
+        //    local_grant; a waiter whose round was invisible to the sweep
+        //    (see unlock()) could then starve forever — the observed
+        //    lw_* hang at every thread count >= 2.
+        unsigned spins = 0;
+        for (;;) {
+            if (local_grant) return;
+            if (*waker_flag_ && waker_lock_.trylock(thread_id)) {
+                Fence();
+                if (local_grant) {
+                    // Granted while acquiring the waker lock: do NOT consume
+                    // the flag (that would destroy a lock token that belongs
+                    // to some other, still-invisible waiter).
+                    waker_lock_.unlock();
+                    return;
+                }
+                if (*waker_flag_) {
+                    // Lock is free: consume the token and self-serve.
+                    *waker_flag_ = false;
+                    Fence();
+                    // Leave a SERVED breadcrumb instead of advancing the
+                    // wire head. The old code set next_round = round + 1
+                    // here, which skipped any earlier, not-yet-registered
+                    // rounds on this wire and made those waiters permanently
+                    // invisible to unlock()'s sweep. The sweep now advances
+                    // the head past SERVED rounds itself, in order.
+                    slot->state = SLOT_SERVED;
+                    Fence();
+                    waker_lock_.unlock();
+                    return;
+                }
+                waker_lock_.unlock();
             }
-        } else {
-            while (!local_grant) { LcSpinHint(); }
+            LcSpinWait(spins);
         }
     }
 
@@ -217,30 +256,28 @@ public:
         //   next_to_serve_ tracks position in this ordering.
         size_t next = next_to_serve_;
         next_to_serve_ = next + 1;
+        size_t pred_wire = next % width_;
 
-        size_t pred_wire  = next % width_;
-        // Use wire_heads for the actual per-wire round to serve
-        size_t pred_round = get_wire_head(pred_wire)->next_round;
-
-        // First: check predicted (wire, round) — O(1)
-        auto* slot = get_wire_slot(pred_wire, pred_round % rounds_cap_);
-        if (slot->occupied && slot->round == pred_round) {
-            get_wire_head(pred_wire)->next_round = pred_round + 1;
-            *slot->spin_addr = true;
-            Fence();
-            slot->occupied = false;
-            return;
+        // First: check predicted wire — O(1) on prediction hit
+        catch_up_head(pred_wire);
+        {
+            size_t r = get_wire_head(pred_wire)->next_round;
+            auto* s = get_wire_slot(pred_wire, r % rounds_cap_);
+            if (s->state == SLOT_WAITING && s->round == r) {
+                grant(pred_wire, r, s);
+                return;
+            }
         }
 
         // Prediction missed — sweep all W wires for the minimum
         // (round, wire_distance) waiter.  This handles step-property
         // violations under concurrency.
-
         size_t best_wire  = width_;
         size_t best_round = ~(size_t)0;
         WireSlot* best_slot = nullptr;
 
         for (size_t w = 0; w < width_; w++) {
+            catch_up_head(w);
             size_t r = get_wire_head(w)->next_round;
             auto* s = get_wire_slot(w, r % rounds_cap_);
 
@@ -248,7 +285,7 @@ public:
             if (w + 1 < width_)
                 __builtin_prefetch(get_wire_head(w + 1), 0, 1);
 
-            if (s->occupied && s->round == r) {
+            if (s->state == SLOT_WAITING && s->round == r) {
                 // Compare (round, wire_dist) lexicographically
                 size_t wd = (w + width_ - pred_wire) % width_;
                 if (r < best_round ||
@@ -261,14 +298,14 @@ public:
         }
 
         if (best_slot) {
-            get_wire_head(best_wire)->next_round = best_round + 1;
-            *best_slot->spin_addr = true;
-            Fence();
-            best_slot->occupied = false;
+            grant(best_wire, best_round, best_slot);
             return;
         }
 
-        // No waiter found — set waker flag for late arrivals
+        // No visible waiter — set waker flag. Waiters poll this flag in
+        // lock(), so an invisible waiter (registered at a round above its
+        // wire head) claims the free lock through the waker lock instead
+        // of being lost.
         *waker_flag_ = true;
         Fence();
     }
@@ -293,9 +330,17 @@ public:
 private:
     static constexpr size_t CL = std::hardware_destructive_interference_size;
 
+    // Slot lifecycle: EMPTY -> WAITING (registration) -> EMPTY (granted by
+    // unlock) or SERVED (self-served via waker flag; cleaned up by the next
+    // sweep's catch_up_head, which uses it to advance the wire head without
+    // skipping earlier rounds).
+    static constexpr int SLOT_EMPTY   = 0;
+    static constexpr int SLOT_WAITING = 1;
+    static constexpr int SLOT_SERVED  = 2;
+
     // Per-wire slot: one waiter registration at a (wire, round) position
     struct WireSlot {
-        volatile bool   occupied;
+        volatile int    state;
         volatile size_t tid;
         volatile size_t round;      // For verification against wrap-around
         volatile bool*  spin_addr;
@@ -339,6 +384,37 @@ private:
 
     ThreadMeta* get_meta(size_t tid) const {
         return (ThreadMeta*)&meta_base_[tid * CL];
+    }
+
+    // Advance a wire's head past rounds completed via the waker-flag path.
+    // Rounds are assigned contiguously per wire, so each head round is
+    // eventually either granted here (head advanced at grant time) or
+    // marked SERVED by its self-serving owner (head advanced here). Only
+    // the lock holder calls this, so head/slot mutation is single-writer.
+    void catch_up_head(size_t w) {
+        auto* head = get_wire_head(w);
+        for (;;) {
+            auto* s = get_wire_slot(w, head->next_round % rounds_cap_);
+            if (s->state == SLOT_SERVED && s->round == head->next_round) {
+                s->state = SLOT_EMPTY;
+                head->next_round++;
+            } else {
+                break;
+            }
+        }
+    }
+
+    // Grant the lock to the waiter registered at (w, r). The slot is
+    // released before the spin_addr write: the moment *spin_addr flips,
+    // the waiter may return and its stack frame (which spin_addr points
+    // into) dies — it must be the very last touch.
+    void grant(size_t w, size_t r, WireSlot* s) {
+        get_wire_head(w)->next_round = r + 1;
+        volatile bool* addr = s->spin_addr;
+        s->state = SLOT_EMPTY;
+        Fence();
+        *addr = true;
+        Fence();
     }
 };
 
@@ -409,19 +485,18 @@ public:
         global_seq_.store(0, std::memory_order_relaxed);
         *now_serving_ = 0;
 
+        // NO_TOKEN sentinel: token 0 is a valid sequence number, so slots
+        // must be explicitly initialized to a value no thread will ever hold.
         for (size_t i = 0; i < num_slots_; i++) {
             auto* s = get_slot(i);
-            s->occupied = false;
-            s->token    = 0;
-            s->spin_addr = nullptr;
+            s->token         = NO_TOKEN;
+            s->granted_token = NO_TOKEN;
         }
 
         initialized_ = true;
     }
 
     void lock(size_t thread_id) override {
-        volatile bool local_grant = false;
-
         // 1. Traverse counting network (distributes contention)
         //    The network output is NOT used for ordering — only for
         //    distributing the contention across W/2 balancers so that
@@ -432,40 +507,51 @@ public:
         //    This single fetch_add produces contiguous, globally-ordered tokens.
         size_t seq = global_seq_.fetch_add(1, std::memory_order_acq_rel);
 
-        // 3. Register in slot array for direct handoff
-        size_t my_slot = seq & slot_mask_;
-        auto* slot = get_slot(my_slot);
-        slot->spin_addr = &local_grant;
-        slot->token     = seq;
-        Fence();
-        slot->occupied  = true;
+        // 3. Register in slot array for direct handoff.
+        //    Single-writer safety: a slot is shared by tokens seq and
+        //    seq +/- num_slots; since unserved tokens span at most
+        //    num_threads (each thread holds one) and num_slots >= 4n,
+        //    two live registrants can never collide on a slot.
+        auto* slot = get_slot(seq & slot_mask_);
+        slot->token = seq;
         Fence();
 
-        // 4. Spin until it's our turn (via now_serving or direct handoff)
-        while (!local_grant && *now_serving_ != seq) {
-            LcSpinHint();
+        // 4. Spin until it's our turn: either the predecessor hands off
+        //    directly into our slot (granted_token == seq), or we observe
+        //    the now_serving update. The grant is token-versioned rather
+        //    than a pointer to our stack: an earlier implementation had the
+        //    unlocker write through a saved `spin_addr` after the waiter had
+        //    already exited via now_serving, re-entered lock(), and reused
+        //    the same stack address for its next wait flag — a delayed
+        //    grant then leaked into the *next* acquisition and let two
+        //    threads into the critical section. A stale write of
+        //    granted_token = seq cannot match any future occupant of this
+        //    slot (their token differs by a multiple of num_slots).
+        unsigned spins = 0;
+        while (slot->granted_token != seq && *now_serving_ != seq) {
+            LcSpinWait(spins);
         }
+        Fence();
     }
 
     void unlock(size_t /*thread_id*/) override {
-        // Clear current slot
+        // Advance to next token. This alone releases the lock — the
+        // successor's spin loop watches now_serving_.
         size_t cur = *now_serving_;
-        get_slot(cur & slot_mask_)->occupied = false;
-        Fence();
-
-        // Advance to next token
         size_t next_token = cur + 1;
         *now_serving_ = next_token;
         Fence();
 
-        // Try to wake successor directly — O(1) handoff
-        size_t next_slot_idx = next_token & slot_mask_;
-        auto* nse = get_slot(next_slot_idx);
+        // Try to wake successor directly — O(1) handoff onto the
+        // successor's own cache line (reduces traffic on now_serving_).
+        // Writing the token value (not a bool) keeps a late write harmless:
+        // it can only ever match the exact registration it observed.
+        auto* nse = get_slot(next_token & slot_mask_);
 
         static constexpr int HANDOFF_SPINS = 64;
         for (int i = 0; i < HANDOFF_SPINS; i++) {
-            if (nse->occupied && nse->token == next_token) {
-                *nse->spin_addr = true;
+            if (nse->token == next_token) {
+                nse->granted_token = next_token;
                 Fence();
                 return;
             }
@@ -490,11 +576,11 @@ public:
 
 private:
     static constexpr size_t CL = std::hardware_destructive_interference_size;
+    static constexpr size_t NO_TOKEN = ~(size_t)0;
 
     struct SlotEntry {
-        volatile bool   occupied;
-        volatile size_t token;
-        volatile bool*  spin_addr;
+        volatile size_t token;          // registered sequence number
+        volatile size_t granted_token;  // set to `token` by the unlocker
     };
 
     NetworkT<Sync> network_;
@@ -625,8 +711,9 @@ public:
         if (v > 0) {
             size_t pred_slot = (v - 1) % num_threads_;
             uint8_t expected = phase_of(v - 1);
+            unsigned spins = 0;
             while (*get_phase_bit(pred_slot) != expected) {
-                LcSpinHint();
+                LcSpinWait(spins);
             }
         }
         // Lock acquired.
@@ -709,38 +796,35 @@ public:
 // =============================================================================
 // SECTION 4: Skew-Filter Counting Lock  (Design D)
 //
-// From Herlihy, Shavit, Waarts (1996), Section 4.1: "The Skew Network"
+// ⚠ IMPLEMENTATION STATUS — the Skew filter here is an OVERHEAD MODEL, not
+// the Herlihy-Shavit-Waarts §4.1 construction. lock() runs the filter-shaped
+// traversal (one fetch_add per layer against a w×d toggle grid, row walk
+// seeded from the network output), but the resulting row is DISCARDED:
+// ordering is enforced entirely by an ordinary ticket pair
+// (global_seq_ fetch_add + now_serving_ spin). Consequences:
+//   - Correct mutual exclusion and linearizability (via the ticket, which
+//     is trivially a linearization point) — verified 2026-07 at 2/4/8T.
+//   - The filter contributes only cost (layer_depth_ = n-1 extra atomic
+//     RMWs per acquisition), useful for measuring what an HSW-style filter
+//     topology would add to the lock path.
+//   - Skew and ReverseSkew are therefore behaviorally identical; their only
+//     difference (row increment vs decrement) has no observable effect.
+// Making the filter real — folded multi-balancers whose OUTPUT is the
+// ticket (HSW §4.3, Theorem 4.12 bounded toggles) — is open work; see
+// LINEARIZABLE_COUNTING_ANALYSIS.md §4b for the options.
 //
-// Architecture: counting_network → Skew-filter → per-wire counters
+// ── Original design intent (HSW §4.1, kept for reference) ──
+// Architecture: counting_network → Skew-filter → per-wire counters.
+// The Skew-filter (d layers) reorders tokens so the combined output is
+// linearizable; d ≥ n-1 gives exit(a) < enter(b) ⟹ val(a) < val(b)
+// (Theorem 4.8). Skew-layer = chain of balancers b_i with north outputs as
+// layer outputs; folding (§4.3) maps the infinite filter onto a w×d grid
+// of multi-balancers with bounded counters.
 //
-// A counting network distributes contention across O(log²W) balancers.
-// The Skew-filter (d layers of Skew-layer networks) then reorders the
-// tokens so that the combined output is linearizable.
-//
-// Skew-layer structure (paper Figure 4):
-//   A chain of balancers b_0, b_1, b_2, ...
-//   - b_0: both inputs are network inputs (wires 0 and 1)
-//   - b_i (i>0): north input = south output of b_{i-1};
-//                 south input = network input wire 2i+1 (if exists)
-//   - All b_i: north output = layer output wire
-//   - Last balancer's south output = last layer output wire
-//
-// Folding (Section 4.3):
-//   The infinite Skew-filter is folded into a w×d grid of multi-balancers.
-//   Multi-balancer c[i][j] simulates b_{i-j}, b_{i-j+w}, b_{i-j+2w}, ...
-//   Each multi-balancer uses an atomic counter (Theorem 4.12: at most
-//   2n+2 toggle transitions, so a bounded counter suffices).
-//
-// For the mutex: output values serve as tickets ordered by now_serving.
-//
-// Complexity:
-//   Lock:   O(log²W) network + O(n) filter layers (avg path 2n-2 balancers)
-//   Unlock: O(1) — advance now_serving + direct handoff
-//   Space:  O(W·d·CL) balancers + O(n·CL) slots
-//   Waiting: Requires waiting (same correctness as Waiting-filter, but
-//            contention is distributed through the Skew-filter topology)
-//
-// Linearizability: Theorem 4.8 — if d ≥ n-1, exit(a) < enter(b) ⟹ val(a) < val(b)
+// Complexity as implemented:
+//   Lock:   O(log²W) network + (n-1) filter fetch_adds + 1 ticket fetch_add
+//   Unlock: O(1) — now_serving_.fetch_add
+//   Space:  O((W+n)·(n-1)) toggle slots + network
 // =============================================================================
 
 template <typename Sync, template <typename> class NetworkT>
@@ -764,9 +848,13 @@ public:
 
         network_.build(width_, num_threads);
 
-        // Allocate toggle array (needs atomic alignment)
+        // Allocate toggle array from the CXL-aware region allocator so it
+        // lands in the same memory domain as every other lock's state
+        // (plain new[] here previously put it in ordinary process heap,
+        // breaking the single-region invariant under -Dcxl/-Dhardware_cxl).
         size_t toggle_count = filter_rows_ * layer_depth_;
-        toggles_ = new std::atomic<size_t>[toggle_count];
+        toggles_bytes_ = toggle_count * sizeof(std::atomic<size_t>);
+        toggles_ = (std::atomic<size_t>*)ALLOCATE(toggles_bytes_);
         for (size_t i = 0; i < toggle_count; i++) {
             toggles_[i].store(0, std::memory_order_relaxed);
         }
@@ -781,7 +869,9 @@ public:
         size_t lv = 0;
         network_.traverse((int)(thread_id % width_), thread_id, &lv);
 
-        // 2. Traverse Skew-filter.
+        // 2. Traverse the filter-shaped toggle grid. NOTE: `row` is
+        //    deliberately discarded below — see the section comment. This
+        //    loop models the cost of an HSW skew filter, not its ordering.
         //    Skew-layer topology (per layer):
         //      toggle even -> north (stay at row r)
         //      toggle odd  -> south (move to row r+1)
@@ -802,8 +892,9 @@ public:
         size_t ticket = global_seq_.fetch_add(1, std::memory_order_relaxed);
 
         // 4. Spin until now_serving matches our ticket (ticket-lock)
+        unsigned spins = 0;
         while (now_serving_.load(std::memory_order_acquire) != ticket) {
-            LcSpinHint();
+            LcSpinWait(spins);
         }
     }
 
@@ -815,7 +906,7 @@ public:
         if (!initialized_) return;
         initialized_ = false;
         network_.destroy();
-        delete[] toggles_;
+        FREE((void*)toggles_, toggles_bytes_);
         toggles_ = nullptr;
     }
 
@@ -831,6 +922,7 @@ private:
     size_t layer_depth_  = 0;
 
     std::atomic<size_t>* toggles_   = nullptr;  // filter balancers
+    size_t toggles_bytes_ = 0;
     std::atomic<size_t>  global_seq_{0};         // ticket counter
     std::atomic<size_t>  now_serving_{0};        // ticket-lock serving counter
 
@@ -861,34 +953,25 @@ public:
 // =============================================================================
 // SECTION 4.5: Reverse-Skew-Filter Counting Lock  (Design E)
 //
-// From Herlihy, Shavit, Waarts (1996), Section 4.2: "The Reverse-skew Network"
+// ⚠ IMPLEMENTATION STATUS — same caveat as the Skew lock above: the filter
+// traversal is an OVERHEAD MODEL whose output (`row`) is discarded; ordering
+// comes from the global_seq_/now_serving_ ticket pair. Because the discarded
+// row walk is the only difference from SkewFilterCountingLock (decrement vs
+// increment), the two locks are behaviorally identical as implemented. The
+// HSW §4.2 properties described below (wait-freedom of the filter,
+// Theorem 4.10 layer depth) apply to the referenced design, NOT to this code.
 //
-// The Reverse-skew-filter is the mirror image of the Skew-filter.
-// In a Reverse-layer:
-//   - b_0: both outputs are network output wires
-//   - b_i (i>0): south output = network output wire;
-//                 north output = south input of b_{i-1}
+// ── Original design intent (HSW §4.2, kept for reference) ──
+// The Reverse-skew-filter is the mirror image of the Skew-filter: a token
+// entering on a high wire drops toward wire 0, picking up its output wire
+// along the way, exiting after at most O(n²/w) balancers — the filter itself
+// is wait-free (no starvation), unlike the Skew filter. Theorem 4.10: with
+// d ≥ ⌈(n-1)/2⌉·w - 1 layer depth it solves linearizable counting.
 //
-// A token entering on a high wire drops toward wire 0, picking up
-// its output wire along the way.  This guarantees that every token
-// exits after at most O(n²/w) balancers — the Reverse-skew network
-// is WAIT-FREE (no starvation), unlike the Skew network.
-//
-// Reverse-layer topology (per layer):
-//   Token at row r:
-//     toggle even → south (output/stay at row r)
-//     toggle odd  → north (move to row r-1, i.e., toward wire 0)
-//
-// For the mutex: same handoff as the Skew-filter lock (now_serving + slots).
-//
-// Complexity:
-//   Lock:   O(log²W) network + O(n) filter (bounded, no starvation)
-//   Unlock: O(1) — advance now_serving + direct handoff
-//   Space:  O(W·d·CL) + O(n·CL)
-//   Waiting: Wait-free (every token exits after bounded steps)
-//
-// Theorem 4.10: With d ≥ ⌈(n-1)/2⌉·w - 1 layer depth, the Reverse-skew
-// network solves linearizable counting.
+// Complexity as implemented:
+//   Lock:   O(log²W) network + (n-1) filter fetch_adds + 1 ticket fetch_add
+//   Unlock: O(1) — now_serving_.fetch_add
+//   Space:  O((W+n)·(n-1)) toggle slots + network
 // =============================================================================
 
 template <typename Sync, template <typename> class NetworkT>
@@ -907,9 +990,11 @@ public:
 
         network_.build(width_, num_threads);
 
-        // Allocate toggle array
+        // Allocate toggle array via the CXL-aware allocator (see the note
+        // in SkewFilterCountingLock::init).
         size_t toggle_count = filter_rows_ * layer_depth_;
-        toggles_ = new std::atomic<size_t>[toggle_count];
+        toggles_bytes_ = toggle_count * sizeof(std::atomic<size_t>);
+        toggles_ = (std::atomic<size_t>*)ALLOCATE(toggles_bytes_);
         for (size_t i = 0; i < toggle_count; i++) {
             toggles_[i].store(0, std::memory_order_relaxed);
         }
@@ -924,7 +1009,8 @@ public:
         size_t lv = 0;
         network_.traverse((int)(thread_id % width_), thread_id, &lv);
 
-        // 2. Traverse Reverse-skew-filter (mirror of Skew-filter).
+        // 2. Traverse the mirrored filter grid. `row` is discarded (see
+        //    the section comment) — this walk models cost, not ordering.
         //    Reverse-layer topology:
         //      toggle even -> south (stay at current row)
         //      toggle odd  -> north (move up to row r-1)
@@ -945,8 +1031,9 @@ public:
         size_t ticket = global_seq_.fetch_add(1, std::memory_order_relaxed);
 
         // 4. Spin until now_serving matches our ticket
+        unsigned spins = 0;
         while (now_serving_.load(std::memory_order_acquire) != ticket) {
-            LcSpinHint();
+            LcSpinWait(spins);
         }
     }
 
@@ -958,7 +1045,7 @@ public:
         if (!initialized_) return;
         initialized_ = false;
         network_.destroy();
-        delete[] toggles_;
+        FREE((void*)toggles_, toggles_bytes_);
         toggles_ = nullptr;
     }
 
@@ -974,6 +1061,7 @@ private:
     size_t layer_depth_  = 0;
 
     std::atomic<size_t>* toggles_   = nullptr;
+    size_t toggles_bytes_ = 0;
     std::atomic<size_t>  global_seq_{0};
     std::atomic<size_t>  now_serving_{0};
 

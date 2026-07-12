@@ -194,17 +194,16 @@ O(n) to O(W). Under practical linearizability, prediction hits often → O(1) av
 **Key limitation**: Non-contiguous per-pair rounds break the `next_to_serve` prediction
 under high concurrency. Fallback to O(W) sweep. Still much better than O(n).
 
-> **Status (verified 2026-07):** Design A is **broken** under multi-thread
-> contention — all 8 `lw_*` variants hang (no progress within timeout) at
-> every thread count ≥ 2 on the max-contention benchmark. Static analysis of
-> the waker protocol itself did not turn up a deadlock; the most defensible
-> root-cause candidate is the **per-wire slot ring overflow** (Assumption A4
-> below made real): registration overwrites `wire_slots[wire][round % cap]`
-> unconditionally with no occupancy check, so when a wire accumulates more
-> than `rounds_cap_` outstanding rounds (a delayed thread repeatedly losing
-> the doorway while others keep landing on its wire), a newer registration
-> silently clobbers the earlier waiter's `spin_addr`, permanently losing its
-> wakeup. The `lw_*` type aliases exist in code but must not be benchmarked.
+> **Status: REPAIRED 2026-07-11** (all 8 `lw_*` variants now pass the
+> breach-detecting benchmark, 5 reps × {2,4,8} threads, 0 failures). The
+> implementation previously hung at every thread count ≥ 2. Root causes as
+> found during repair (§8.3 has full detail): (1) the waker-flag self-serve
+> path advanced its wire head to `round + 1`, skipping earlier rounds whose
+> owners had not yet registered — since the sweep probes only each wire's
+> exact head round, those waiters became permanently invisible; (2) waiters
+> tried the waker lock once and then spun passively, so a free-floating lock
+> token could never reach an invisible waiter. The slot-ring overflow risk
+> (Assumption A4 below) was real too and is closed by rounds_cap ≥ 2n.
 
 ### Design B: Sequenced Counting Lock (Guaranteed O(1) Unlock)
 
@@ -237,18 +236,18 @@ contention, this becomes a serialization bottleneck. However, the counting netwo
 distributes arrival times, so threads hit global_seq at staggered intervals,
 reducing contention on it compared to a pure ticket lock.
 
-> **Status (verified 2026-07):** Design B is **broken**, but not the way
-> previously described (it has no designated-waker protocol to deadlock — that
-> machinery only exists in Design A). Under a breach-detecting critical
-> section, all 8 `seq_*` variants probabilistically **violate mutual
-> exclusion** at ≥ 4 threads (reproduced: 2-3 breaches out of 5 runs at 4T for
-> `seq_bitonic_cas`/`seq_periodic_cas`, plus occasional hangs). Any historical
-> throughput numbers for `seq_*` predate the breach detector and are invalid —
-> a lock that admits two threads at once posts excellent but meaningless
-> throughput. The design itself (network + global fetch_add + slot handoff)
-> remains sound on paper; the defect is in the implementation's
-> handoff/slot-reuse path and needs a race-hunt before `seq_*` can be
-> benchmarked.
+> **Status: REPAIRED 2026-07-11** (all 8 `seq_*` variants now pass the
+> breach-detecting benchmark, 5 reps × {2,4,8} threads, 0 failures; the
+> repaired `seq_periodic_cas` matches MCS at 4T — see
+> `ELEVATOR_SET_COMPARISON.md` §7.4). The implementation previously violated
+> mutual exclusion at ≥ 4 threads: unlock() saved a pointer into the
+> successor's stack (`spin_addr`) and could write the grant through it up to
+> 64 spins after publishing `now_serving_` — by which time the successor may
+> have exited via the now_serving path, unlocked, and re-entered lock() with
+> a new wait flag at the same stack address, so the delayed write released
+> the *next* acquisition early. Fixed by replacing the pointer with a
+> token-versioned grant field in the slot itself (§8.3): a stale write can
+> only equal the registration it observed, never a future occupant's token.
 
 **Comparison to `cn_array_lock`** (removed): Architecturally similar — both use
 a global counter for contiguous tokens + slot array for O(1) unlock. The
@@ -348,19 +347,20 @@ but the doc-comments in the source should be softened in any case.
 
 ### 5.1 When to Use Which
 
-The table above describes the designs *as designed*. As implemented (see the
-status notes in §4), only Design C (WF) and the base O(n) locks are usable:
+All four options below are implemented and verified correct as of 2026-07-11
+(Designs A and B after the §8.3 repairs):
 
-- **Design A** (*theory*): when lock-path contention must be minimized (no
-  extra atomic), moderate contention where the step property holds well.
-  *Implementation currently hangs — do not use.*
+- **Design A**: when lock-path contention must be minimized (no extra
+  atomic), moderate contention where the step property holds well. Note the
+  repaired implementation is liveness-preserving but not starvation-free
+  under adversarial scheduling (§8.3).
 
-- **Design B** (*theory*): when unlock latency must be guaranteed O(1). The
-  extra fetch_add on the lock path is a small price for deterministic unlock.
-  *Implementation currently violates mutual exclusion — do not use.*
+- **Design B**: when unlock latency must be guaranteed O(1). The extra
+  fetch_add on the lock path is a small price for deterministic unlock —
+  and measured post-repair it is the strongest ordered network lock at 4T.
 
-- **Design C (WF)**: the working choice for O(1) unlock + linearizable
-  ordering today.
+- **Design C (WF)**: O(1) unlock + linearizable ordering with **zero** extra
+  atomics — the choice when the RMW-free property matters.
 
 - **Current O(n)**: when n is small (≤16) or when W ≈ n (so O(W) ≈ O(n) anyway).
   The simpler code may be faster for small thread counts due to lower constant factors.
@@ -384,10 +384,11 @@ As designed, both A and B were meant to tolerate preemption:
     successor's own spin loop self-resolves once `now_serving_` catches up
     (the implementation has no waker flag — only Design A has waker machinery)
 
-In practice this section describes intent, not verified behavior: Design A's
-implementation hangs under contention (the slot-ring overwrite defeats the
-fallback — see §4), and Design B's implementation has a mutual-exclusion race.
-Only the base O(n) locks and Design C currently degrade gracefully as described.
+Post-repair (2026-07-11), the implementations realize this intent: Design A's
+SERVED-breadcrumb sweep plus waker-flag polling handles a preempted
+registrant without losing anyone (§8.3), and Design B's now_serving escape
+path is now race-free (token-versioned handoff). Preemption degrades
+performance, not correctness, in all four implemented designs.
 
 ---
 
@@ -446,8 +447,144 @@ The per-wire slot infrastructure works regardless of which network produced the
 6. **OS preemption** is the practical enemy of all these optimizations. The waker
    protocol is essential for correctness under arbitrary scheduling.
 
-7. **Implementation status (verified 2026-07, breach-detecting benchmark at
-   2/4/8 threads)**: Design C (WF) — correct, all 8 variants. Design A (LW) —
-   hangs at ≥2T. Design B (Seq) — violates mutual exclusion at ≥4T.
-   Skew/RSkew — correct, but behaviorally ticket locks (§4b); they do not
-   exercise the HSW filter constructions they cite.
+7. **Implementation status (re-verified 2026-07-11 after repair, breach-detecting
+   benchmark, 5 reps × {2,4,8} threads)**: Design C (WF) — correct, all 8
+   variants. Design A (LW) — **repaired** (previously hung at ≥2T; see §8.3
+   for the two root causes and the fix). Design B (Seq) — **repaired**
+   (previously violated mutual exclusion at ≥4T; see §8.3). Skew/RSkew —
+   correct, but behaviorally ticket locks (§4b); they do not exercise the HSW
+   filter constructions they cite.
+
+---
+
+## 8. Formal Design Summary — Counting-Network Locks in Context
+
+This section states precisely what each lock family guarantees, under what
+model, and where it sits relative to the classical locks in this repo
+(`spin`, `ticket`, `mcs`, the elevator family). "Verified" below means the
+breach-detecting max-contention benchmark (2026-07, Apple M-series, 2/4/8
+threads, 5 reps); "argued" means a code-level invariant argument, not a proof.
+
+### 8.1 Model
+
+- n asynchronous threads, ids 0..n−1, arbitrary preemption (no timing bounds).
+- Shared memory with `volatile` accesses ordered by explicit `Fence()`
+  (DMB ISH on ARM, locked add on x86). CAS-family locks additionally use
+  `fetch_add`/`exchange`/`compare_exchange` RMWs.
+- A *token* (ticket) is a value drawn from some counting mechanism; a lock is
+  built by serving tokens in an agreed order.
+
+The families differ only in **how the token is drawn** and **how the next
+token holder is found at unlock** — this two-axis view is the formalization:
+
+| Axis 1: token source | Contention profile | Token properties |
+|---|---|---|
+| Single RMW (`ticket`, `mcs` tail, Seq's `global_seq_`) | All n threads hit one cache line | Contiguous, linearizable |
+| Counting network (`bitonic_*`, `periodic_*`, WF, LW) | Spread over Θ(w·log²w) balancers, ≤ ⌈n/W⌉ threads each (expected) | Unique; **quiescently consistent only** — non-contiguous under concurrency (AHS Lemma 2.2 holds only at quiescence) |
+| None (`spin`) | One cache line, unordered | No tokens — no fairness |
+
+| Axis 2: successor lookup at unlock | Cost | Used by |
+|---|---|---|
+| None (release a flag) | O(1) | `spin` |
+| Increment a serving counter | O(1) | `ticket`, Seq, Skew/RSkew |
+| Follow a queue link | O(1) | `mcs` |
+| Scan all thread metadata | O(n) | base `bitonic_*`/`periodic_*`, elevator family |
+| Per-wire heads + prediction | O(1) hit / O(W) miss | LW |
+| Predecessor phase bit (no lookup at all) | O(1) | WF |
+
+The central obstruction — and the reason Designs A/B/C exist — is that
+counting-network tokens are **not contiguous**: a thread cannot spin on
+"serving == my_token" because token values can have transient gaps
+(LINEARIZABLE_COUNTING_ANALYSIS §2.3/A5). Each design closes the gap
+differently: LW re-sorts tokens per wire; Seq abandons network ordering and
+draws a second, contiguous token; WF exploits that network tokens on the
+*same* wire are contiguous per-wire and chains predecessors across an
+n-slot filter.
+
+### 8.2 Properties per family
+
+| Lock | Mutual exclusion | Deadlock-freedom | Starvation-freedom | Fairness | lock() cost | unlock() cost | RMW-free? |
+|---|---|---|---|---|---|---|---|
+| `spin` | verified | argued (TAS) | **no** | none | O(1) amortized | O(1) | no |
+| `ticket` | verified | argued | argued | FIFO | 1 RMW + spin | O(1) | no |
+| `mcs` | verified | argued | argued | FIFO | 2 RMW + local spin | O(1) | no |
+| `linear/tree_*_elevator` | verified | argued | argued (cyclic sweep) | ≈FIFO / tree-order | O(n) / O(log n) | O(n) / O(log n) | **BL/Lamport variants yes** |
+| `bitonic_*`, `periodic_*` | verified | argued (waker-flag token conservation) | argued (round-robin wire advance) | bounded skew (≤ W−1 grants) | O(log²W × T_sync) | O(n) | **bl/lamport/bakery yes** |
+| WF (`wf_*`) | verified | argued (predecessor chain is total) | argued | linearizable token order | O(log²W × T_sync) + chain wait | **O(1)** | **bl/lamport/bakery yes** |
+| Seq (`seq_*`, repaired) | verified | argued (now_serving escape) | argued | linearizable (global RMW) | O(log²W × T_sync) + 1 RMW | **O(1)** + bounded handoff | no (global_seq_ is RMW) |
+| LW (`lw_*`, repaired) | verified | argued (§8.3 token conservation) | **argued only under fair scheduling** — flag polling is competitive, not queued | ≈ step-property order, unbounded skew possible | O(log²W × T_sync) | O(W) + SERVED cleanup | **bl/lamport/bakery yes** |
+| Skew/RSkew | verified | argued (ticket) | argued (ticket) | FIFO (ticket order, *not* filter order) | O(log²W) + (n−1)+1 RMW | O(1) | no |
+
+T_sync = per-balancer sync cost: O(1) for cas, O(n) doorway for bl/bakery,
+O(1)..O(n) for lamport (see BITONIC_NETWORKS_COMPLEXITY.md).
+
+### 8.3 The two repaired implementations (2026-07-11)
+
+**Design B (Seq) — was: mutual-exclusion violation.** The unlocker saved a
+pointer to the successor's *stack* (`spin_addr`) and could write through it
+up to 64 spins after publishing `now_serving_`. The successor could exit via
+the `now_serving_` path, unlock, and re-enter `lock()` reusing the same stack
+address for its next wait flag; the delayed grant then released the *next*
+acquisition early — two holders. **Fix**: the grant is now a token value
+written into the slot itself (`granted_token = seq`); a stale write can only
+ever equal the registration it observed and can never match a future
+occupant of that slot (tokens sharing a slot differ by num_slots ≥ 4n while
+unserved tokens span ≤ n). Verified: 0 breaches/hangs in 5×{2,4,8}T.
+
+**Design A (LW) — was: hang at every thread count ≥ 2.** Two cooperating
+defects: (1) a thread that claimed the free lock through the waker flag
+advanced its wire's head to `round+1`, skipping earlier *not-yet-registered*
+rounds on that wire; since the sweep probes only the exact head round of each
+wire, those waiters became permanently invisible. (2) A waiter that failed
+`trylock` once fell into a passive spin and never re-examined the waker flag
+— so the "free-floating lock" token could never reach an invisible waiter.
+**Fix**: (1) self-served threads now leave a SERVED breadcrumb in their slot
+instead of advancing the head; the holder's sweep consumes breadcrumbs in
+round order (`catch_up_head`), so heads advance past completed rounds without
+ever skipping a pending one. (2) All waiters poll the waker flag in their
+spin loop (re-attempting `trylock` whenever it is set). (3) `rounds_cap_`
+raised from `4n/W + 4` to `≥ 2n` so a wire's slot ring can never overflow
+(unserved tokens ≤ n). Invariant restored: **token conservation** — at every
+instant exactly one of {a holder exists, a grant is in flight, `waker_flag_`
+is set} holds, and every waiter either becomes visible to a sweep (its round
+is reached by `catch_up_head`) or claims the flag itself. Verified: 0
+breaches/hangs in 5×{2,4,8}T.
+
+Cost of the repairs: Seq's unlock is unchanged (O(1) + bounded handoff
+spins). LW's unlock gains amortized-O(1) breadcrumb cleanup on top of the
+O(W) sweep; LW's starvation story is now *liveness-preserving but not
+starvation-free* — an unlucky waiter can lose the flag race repeatedly under
+adversarial scheduling (same class of guarantee as the original design's
+waker protocol, made explicit).
+
+### 8.4 Are the counting-network locks achieving their design goals?
+
+**Goal 1 — distribute lock-path contention (AHS): partially achieved.**
+The network genuinely spreads RMW traffic across balancers, and at 2T the
+best network lock (`wf_bitonic_cas`, 1.83× MCS) shows the benefit. But at
+4T/8T on this machine every network lock trails MCS: the network's extra
+depth costs more than the contention it removes, and (for base locks) the
+O(n) unlock scan dominates. The AHS use-case — shared *counters* with no
+unlock/handoff phase — distributes better than mutual exclusion does,
+because a mutex re-serializes at handoff no matter how distributed the
+arrival is. This is inherent, not an implementation defect.
+
+**Goal 2 — O(1) unlock with linearizable ordering (HSW): achieved by WF.**
+`wf_*` is correct, O(1)-unlock by construction, and the best-performing
+ordered network lock measured. Seq achieves the same guarantee after repair,
+at the price of one global RMW (its `global_seq_` is the very serialization
+point counting networks were invented to avoid — it is a *hybrid*, not a
+pure counting-network lock).
+
+**Goal 3 — RMW-free mutual exclusion with distributed contention: achieved,
+uniquely.** `bitonic_bl/bakery`, `periodic_bl/bakery`, `wf_*_bl/bakery` are
+the only locks in the repo that combine (a) no atomic RMW instructions at
+all, (b) contention spread over many cache lines, and (c) verified
+correctness. No classical lock here offers this combination (`ticket`/`mcs`
+need RMW; the elevator BL variants are RMW-free but single-point). This is
+the strongest claim the counting-network locks can make, and it survives
+scrutiny — with the caveat that their absolute throughput at 8T is 1-2
+orders of magnitude below MCS.
+
+**Goal 4 — filter-network linearization (HSW §4, Skew/RSkew): not achieved.**
+The filter is an overhead model; ordering is a ticket lock (§4b). Open work.

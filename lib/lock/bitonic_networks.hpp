@@ -72,6 +72,12 @@
   #define BnSpinHint() ((void)0)
 #endif
 
+// Long-wait spin with periodic sched_yield — see LcSpinWait in
+// linearizable_counting_lock.hpp for rationale. Used only for the
+// lock-layer grant waits, not the short per-balancer doorways.
+#define BnSpinWait(spins) \
+    do { if (((++(spins)) & 1023) == 0) sched_yield(); else BnSpinHint(); } while (0)
+
 
 // =============================================================================
 //  SECTION 1: Balancer Synchronisation Policies
@@ -93,7 +99,14 @@ struct BnCASSync {
     }
 
     size_t traverse(size_t /*tid*/) {
-        return counter.fetch_add(1, std::memory_order_acq_rel);
+        // Relaxed is sufficient: the network needs only atomicity of each
+        // increment (every value returned exactly once, so wires alternate
+        // and per-balancer rounds stay contiguous). No cross-thread
+        // happens-before is derived from balancer values — the lock layers
+        // establish ordering separately (now_serving/phase-bit acquire
+        // loads and explicit Fence()s). On ARM this is ldadd vs ldaddal —
+        // one barrier per balancer per acquisition saved.
+        return counter.fetch_add(1, std::memory_order_relaxed);
     }
 
     void destroy() {}
@@ -312,8 +325,15 @@ struct BnBakerySync {
 //    allocators, and work-stealing schedulers.
 // =============================================================================
 
+// alignas: balancers are allocated in arrays (one per merger/block layer).
+// Without padding, Balancer<BnCASSync> is 8 bytes and a whole layer of
+// "independent" balancers shares one cache line, so every fetch_add
+// invalidates the line under every other balancer in the layer — the
+// network pays its full depth while getting none of its contention
+// distribution. Padding each balancer to its own destructive-interference
+// span restores the property the topology is supposed to provide.
 template <typename Sync>
-class Balancer {
+class alignas(std::hardware_destructive_interference_size) Balancer {
 public:
     Sync sync;
 
@@ -790,12 +810,14 @@ public:
         // Designated-waker protocol
         if (waker_lock_.trylock(thread_id)) {
             Fence();
-            while (!local_grant && !*waker_flag_) { BnSpinHint(); }
+            unsigned spins = 0;
+            while (!local_grant && !*waker_flag_) { BnSpinWait(spins); }
             *waker_flag_ = false;
             Fence();
             waker_lock_.unlock();
         } else {
-            while (!local_grant) { BnSpinHint(); }
+            unsigned spins = 0;
+            while (!local_grant) { BnSpinWait(spins); }
         }
     }
 
@@ -954,12 +976,14 @@ public:
 
         if (waker_lock_.trylock(thread_id)) {
             Fence();
-            while (!local_grant && !*waker_flag_) { BnSpinHint(); }
+            unsigned spins = 0;
+            while (!local_grant && !*waker_flag_) { BnSpinWait(spins); }
             *waker_flag_ = false;
             Fence();
             waker_lock_.unlock();
         } else {
-            while (!local_grant) { BnSpinHint(); }
+            unsigned spins = 0;
+            while (!local_grant) { BnSpinWait(spins); }
         }
     }
 

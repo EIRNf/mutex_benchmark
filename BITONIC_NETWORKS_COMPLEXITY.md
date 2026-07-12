@@ -55,12 +55,13 @@ critical section at 2/4/8 threads — see `ELEVATOR_SET_COMPARISON.md` §7.4):**
 - All 16 `skew_*`/`rskew_*`: **correct** (but see the note in
   `LINEARIZABLE_COUNTING_ANALYSIS.md` §4b — the skew filter is vestigial and
   ordering is enforced by an embedded ticket lock).
-- All 8 `lw_*` (Design A, Wire-Indexed): **broken — deadlock/hang** at every
-  thread count ≥ 2. Do not benchmark.
-- All 8 `seq_*` (Design B, Sequenced): **broken — violates mutual exclusion**
-  (breach detector fires) and occasionally hangs at ≥ 4 threads. Earlier
-  reports of `seq_*` "performing well" were measured before the breach
-  detector existed and are invalid. Do not benchmark.
+- All 8 `lw_*` (Design A, Wire-Indexed): **repaired 2026-07-11** (previously
+  hung at every thread count ≥ 2); now correct, 5 reps × {2,4,8}T clean. See
+  `LINEARIZABLE_COUNTING_ANALYSIS.md` §8.3 for the root causes and fix.
+- All 8 `seq_*` (Design B, Sequenced): **repaired 2026-07-11** (previously
+  violated mutual exclusion at ≥ 4 threads via a stale stack-pointer grant);
+  now correct, 5 reps × {2,4,8}T clean, and competitive — `seq_periodic_cas`
+  matches MCS at 4T. See `LINEARIZABLE_COUNTING_ANALYSIS.md` §8.3.
 
 ---
 
@@ -173,13 +174,13 @@ must be serialised**.  This can be achieved through:
 - **Mechanism**: Per-balancer Burns-Lamport mutual exclusion (N-thread safe)
 - **Trade-off**: No RMW needed, but O(n) doorway per balancer access
 - **Lock names**: `bitonic_bl`, `periodic_bl`
-- **Caution (code audit 2026-07)**: `BurnsLamportMutex::trylock()`
-  (`burns_lamport_lock.hpp`) has only one `Fence()`, while the same algorithm
-  hardened as `BnWakerLock::trylock()` (`bitonic_networks.hpp`) carries two
-  additional fences at the wait-loop→fast-flag-check and release points. This
-  asymmetry is a plausible (unconfirmed) weak-memory race on ARM for the `*_bl`
-  variants; no breach was observed in 2/4/8-thread testing on Apple Silicon,
-  but the fence placement should be reconciled between the two copies.
+- **Note (fixed 2026-07-11)**: `BurnsLamportMutex::trylock()`
+  (`burns_lamport_lock.hpp`) was missing two `Fence()` calls that its
+  hardened sibling `BnWakerLock::trylock()` (`bitonic_networks.hpp`) carries
+  — between the doorway scan and the fast-flag RMW, and before publishing
+  the doorway exit. On a weakly-ordered CPU this permitted two leaders
+  (a plausible, never-observed race). Both fences are now present in both
+  copies.
 
 ### C. Software Mutex — Lamport Fast Lock
 - **ISAs**: Same as Burns-Lamport
@@ -247,9 +248,9 @@ periodic_elevator  periodic_bakery
 Linearizable counting locks (linearizable_counting_lock.hpp):
 ```
 wf_*   (correct):  wf_bitonic_{cas,bl,lamport,bakery}    wf_periodic_{cas,bl,lamport,bakery}
-seq_*  (BROKEN — mutual-exclusion violation at >=4T):
+seq_*  (correct — repaired 2026-07-11):
                    seq_bitonic_{cas,bl,lamport,bakery}   seq_periodic_{cas,bl,lamport,bakery}
-lw_*   (BROKEN — hangs at >=2T):
+lw_*   (correct — repaired 2026-07-11):
                    lw_bitonic_{cas,bl,lamport,bakery}    lw_periodic_{cas,bl,lamport,bakery}
 skew_* / rskew_* (correct; behaviorally ticket locks — see LINEARIZABLE_COUNTING_ANALYSIS.md §4b):
                    skew_bitonic_{cas,bl,lamport,bakery}  skew_periodic_{cas,bl,lamport,bakery}

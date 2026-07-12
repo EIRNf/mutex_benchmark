@@ -45,9 +45,11 @@ hardware requirements.
 \* `mcs_nca` nodes not CL-padded — false sharing possible.  
 † `linear_lamport_elevator` grant flags not CL-padded.  
 ‡ O(1) fast path when uncontended; degrades to O(n) per balancer under contention.  
-§ Seq (`seq_*`) designs are broken: they probabilistically **violate mutual
-exclusion** at ≥4 threads (verified 2026-07 with a breach-detecting critical
-section). LW (`lw_*`) designs hang at ≥2 threads. Neither should be benchmarked.
+§ Seq (`seq_*`) and LW (`lw_*`) were broken (mutual-exclusion violations /
+hangs) and **repaired 2026-07-11** — token-versioned handoff for Seq, SERVED
+breadcrumbs + waker-flag polling for LW; see
+`LINEARIZABLE_COUNTING_ANALYSIS.md` §8.3. All 16 variants now pass the
+breach-detecting benchmark, 5 reps × {2,4,8} threads, 0 failures.
 
 ---
 
@@ -248,10 +250,7 @@ or when structural regularity is valued.
 | Strict FIFO with O(1) unlock | `wf_bitonic_cas` or `wf_periodic_cas` | Waiting-filter, O(1) phase-bit unlock, no extra atomics |
 | O(1) unlock + distributed lock | `wf_bitonic_cas` or `wf_periodic_cas` | Waiting-filter, best balance of throughput and unlock cost |
 
-(`seq_*` was previously recommended for "O(1) unlock + single bottleneck" —
-removed: the implementation violates mutual exclusion at ≥4 threads, see §7.4.
-A plain ticket lock — or `skew_*`, which is behaviorally a network-fronted
-ticket lock — covers that niche until `seq_*` is fixed.)
+| O(1) unlock + single bottleneck | `seq_bitonic_cas` | Sequenced, global fetch\_add linearization (repaired 2026-07-11 after a mutual-exclusion bug; see §7.4/§7.5) |
 
 ---
 
@@ -267,10 +266,10 @@ for full design descriptions and implementation-status caveats).
 
 ### 7.1 Design Overview
 
-| Design | Lock O() | Unlock O() | Extra Atomics | Key Mechanism | Source | Status (verified 2026-07) |
+| Design | Lock O() | Unlock O() | Extra Atomics | Key Mechanism | Source | Status (re-verified 2026-07-11) |
 |---|---|---|---|---|---|---|
-| **A: Wire-Indexed (LW)** | O(log²W) | O(1) pred / O(W) fallback | 0 | Per-wire slot arrays + step-property prediction | Novel | **BROKEN — hangs at ≥2T** |
-| **B: Sequenced (Seq)** | O(log²W) + 1 fetch\_add | O(1) guaranteed | 1 fetch\_add (global\_seq) | Counting network + global ticket + slot array | Aspnes et al. §5.1 | **BROKEN — mutual-exclusion breach at ≥4T** |
+| **A: Wire-Indexed (LW)** | O(log²W) | O(1) pred / O(W) fallback + SERVED cleanup | 0 | Per-wire slot arrays + step-property prediction | Novel | Correct at 2/4/8T (**repaired** — previously hung; see LINEARIZABLE_COUNTING_ANALYSIS.md §8.3) |
+| **B: Sequenced (Seq)** | O(log²W) + 1 fetch\_add | O(1) guaranteed | 1 fetch\_add (global\_seq) | Counting network + global ticket + token-versioned slot handoff | Aspnes et al. §5.1 | Correct at 2/4/8T (**repaired** — previously breached mutual exclusion; see §8.3) |
 | **C: Waiting-Filter (WF)** | O(log²W) + O(1) phase check | **O(1) always** | 0 | Counting network + n-element phase-bit array | Herlihy-Shavit-Waarts §3 | Correct at 2/4/8T |
 | **Skew/RSkew** | O(log²W) + (n−1) fetch\_add + ticket | O(1) fetch\_add | n−1 + 1 fetch\_add | Network + vestigial skew filter + **plain ticket lock** (see `LINEARIZABLE_COUNTING_ANALYSIS.md` §4b) | HSW §4 (aspirational; not actually realized) | Correct at 2/4/8T (as ticket locks) |
 
@@ -327,10 +326,13 @@ Throughput in operations/second.
 
 Correctness sweep first (all 52 counting-network variants + baselines, 2/4/8
 threads, 6s hang timeout): every `bitonic_*`, `periodic_*`, `wf_*`, `skew_*`,
-`rskew_*` variant plus `net_elevator` and `hmcs` passed with no breach; all 8
-`lw_*` variants hung; all 8 `seq_*` variants breached mutual exclusion and/or
-hung at ≥4T. `seq_*` and `lw_*` are therefore excluded from the throughput
-table — a lock that admits two threads at once produces meaningless numbers.
+`rskew_*` variant plus `net_elevator` and `hmcs` passed with no breach. At the
+time of the initial sweep all 8 `lw_*` variants hung and all 8 `seq_*`
+variants breached mutual exclusion and/or hung at ≥4T; both families were
+repaired on 2026-07-11 (see `LINEARIZABLE_COUNTING_ANALYSIS.md` §8.3) and now
+pass 5 reps × {2,4,8}T with 0 failures. The throughput table below predates
+the repair and therefore omits `lw_*`/`seq_*`; repaired-lock throughput is
+listed separately after it.
 
 | Lock | 1T ops/s | 1T vs MCS | 2T ops/s | 2T vs MCS | 4T ops/s | 4T vs MCS | 8T ops/s | 8T vs MCS |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -354,8 +356,25 @@ table — a lock that admits two threads at once produces meaningless numbers.
 > Historical note: an earlier version of this table included `seq_bitonic_cas`
 > / `seq_periodic_cas` with numbers that "beat MCS at 2T/4T" while other
 > sections of this document simultaneously called `seq_*` broken. Both were
-> half-right: `seq_*` runs fast *because* it sometimes admits two threads at
+> half-right: `seq_*` ran fast *because* it sometimes admitted two threads at
 > once. Those measurements predate the breach detector and have been removed.
+
+**Repaired-lock throughput (measured 2026-07-11, after the §7.5 fixes, same
+methodology, breach detector active — these numbers are from correct runs):**
+
+| Lock | 1T | vs MCS | 2T | vs MCS | 4T | vs MCS | 8T | vs MCS |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `mcs` (same-day control) | 24.73M | 1.00x | 6.34M | 1.00x | 5.55M | 1.00x | 1.20M | 1.00x |
+| `lw_bitonic_cas` | 17.73M | 0.72x | 5.42M | 0.85x | 3.78M | 0.68x | 284.9K | 0.24x |
+| `lw_periodic_cas` | 17.56M | 0.71x | 7.92M | 1.25x | 1.23M | 0.22x | 426.4K | 0.35x |
+| `seq_bitonic_cas` | 13.51M | 0.55x | 5.91M | 0.93x | 5.38M | 0.97x | 395.4K | 0.33x |
+| `seq_periodic_cas` | 14.23M | 0.58x | 6.22M | 0.98x | 5.69M | 1.03x | 712.8K | 0.59x |
+
+The repaired Seq is the strongest ordered network lock at 4T (`seq_periodic_cas`
+1.03x MCS) — its global fetch_add costs it at 1T but the network's arrival
+staggering keeps it near-MCS from 2T up, now with genuine mutual exclusion.
+The repaired LW pays its O(W)-sweep + breadcrumb-cleanup unlock visibly at
+higher thread counts, as the design predicts.
 
 ### 7.5 Analysis
 
@@ -391,13 +410,95 @@ table — a lock that admits two threads at once produces meaningless numbers.
    performance/efficiency types, and the benchmark oversubscribes the
    performance cores).
 
-6. **LW (Wire-Indexed) is broken** — hangs at ≥2T, confirmed empirically. The
-   most defensible root cause from code audit is the per-wire slot ring
-   overwrite losing a delayed waiter's wakeup pointer (Assumption A4 in
-   `LINEARIZABLE_COUNTING_ANALYSIS.md`), not the waker protocol per se. Needs
-   an occupancy guard or redesign before it can be benchmarked.
+6. **LW (Wire-Indexed) was broken and is repaired.** It hung at ≥2T: the
+   waker-flag self-serve path advanced a wire's head past not-yet-registered
+   rounds (making those waiters invisible to the sweep forever), and waiters
+   never re-polled the waker flag after one failed trylock. Fixed 2026-07-11
+   with SERVED breadcrumbs consumed in round order by the sweep, flag polling
+   in the wait loop, and a slot ring sized ≥ 2n (see
+   `LINEARIZABLE_COUNTING_ANALYSIS.md` §8.3). Now passes 5×{2,4,8}T clean.
 
-7. **Seq (Sequenced) is broken — it violates mutual exclusion** at ≥4T
-   (probabilistically; reproduced 2-3 times out of 5 runs at 4T). The design
-   is sound on paper; the implementation's handoff/slot-reuse path has a race.
-   Until fixed, any Seq throughput numbers are meaningless.
+7a. **Post-optimization update (2026-07-12).** Three correctness-preserving
+   optimizations to the shared network core (§7.6) changed the competitive
+   picture at high contention: several counting-network locks now beat MCS
+   at 4T and 8T (same-session controls). Findings 1-5 above describe the
+   pre-optimization builds.
+
+7. **Seq (Sequenced) was broken and is repaired.** It violated mutual
+   exclusion at ≥4T: the unlocker could write a grant through a saved pointer
+   into the successor's dead stack frame after the successor had exited via
+   now_serving and re-entered lock(), releasing the next acquisition early.
+   Fixed 2026-07-11 by making the grant a token value stored in the slot
+   itself — a stale write can never match a future occupant's token. Now
+   passes 5×{2,4,8}T clean.
+
+### 7.6 Correctness-Preserving Performance Optimizations (2026-07-12)
+
+Three changes to the shared network core, none touching ordering semantics
+(full 174-run breach-detecting sweep clean afterwards):
+
+1. **Cache-line-padded balancers** (`Balancer` is now
+   `alignas(hardware_destructive_interference_size)`,
+   `bitonic_networks.hpp`). Previously `Balancer<BnCASSync>` was 8 bytes and
+   layer arrays packed **8 "independent" balancers into one cache line** —
+   every fetch_add invalidated the line under the whole layer, so the
+   network paid its full depth while delivering almost none of its
+   contention distribution. This was the single largest defect: the
+   topology's entire purpose was being defeated by layout. Space cost is
+   ~1.5 KB for the largest network here.
+
+2. **Relaxed balancer increments** (`BnCASSync::traverse` uses
+   `memory_order_relaxed`). The network needs only *atomicity* of each
+   increment (each value returned exactly once → wires alternate, rounds
+   stay contiguous); no cross-thread happens-before is derived from
+   balancer values — the lock layers establish ordering via their own
+   acquire loads and fences. On ARM this saves one full-barrier per
+   balancer per acquisition (ldadd vs ldaddal).
+
+3. **Spin-then-yield in lock-layer grant waits** (`LcSpinWait`/`BnSpinWait`,
+   every ~1K spins → `sched_yield()`; per-balancer doorways unchanged).
+   Ordered locks form a handoff chain; on asymmetric (P/E) cores a spinning
+   waiter can occupy the core its predecessor needs, serializing the chain
+   at E-core speed. Yielding is unreachable on the fast path and does not
+   change who acquires next — only when a waiting core is ceded.
+
+**Measured impact** (same methodology as §7.4; same-session `mcs`/`ticket`
+controls; before-numbers from §7.4):
+
+| Lock | 8T before | 8T after | 8T vs MCS after | 4T vs MCS after |
+|---|---:|---:|---:|---:|
+| `mcs` (control) | 775K-1.2M | 935.2K | 1.00x | 1.00x |
+| `ticket` (control) | 714.9K | 932.1K | 1.00x | 1.14x |
+| `wf_bitonic_cas` | 211.1K | **1.27M** | **1.35x** | 1.42x |
+| `wf_periodic_cas` | 146.5K | **1.08M** | **1.15x** | **1.89x** |
+| `skew_bitonic_cas` | 241.1K | **1.33M** | **1.42x** | 1.39x |
+| `seq_periodic_cas` | 712.8K | **1.35M** | **1.44x** | 1.71x |
+| `bitonic_bakery` | 172.0K | 934.1K | 1.00x | 1.02x |
+| `periodic_cas` | 53.7K | 770.2K | 0.82x | 1.39x |
+| `bitonic_cas` | 83.9K | 203.0K | 0.22x | 0.60x |
+
+Reading: at 4T and 8T several counting-network locks now **beat MCS** —
+before the changes, every one trailed it. `bitonic_bakery` matching MCS at
+8T is notable: that is a **zero-atomic-RMW** lock keeping pace with the
+classic queue lock under full contention. 1T/2T results are within
+day-to-day noise (the `mcs` control itself moved ±40% between sessions;
+same-session ratios are the meaningful comparison). `bitonic_cas` improves
+2.4x but remains the weakest — its recursive-merger wiring concentrates
+more traffic on the final-layer balancers than the periodic block structure.
+
+Attribution (spot checks): padding + relaxed dominate the 2T-4T contended
+range; spin-then-yield dominates the 8T recovery (handoff chains no longer
+stall behind spinning waiters on asymmetric cores). All three compound.
+
+**Not implemented (future work, in expected-value order):**
+- *Flatten the recursive traverse* into stride-indexed arrays over one
+  contiguous balancer arena (the pattern `net_elevator_lock.hpp` already
+  uses): removes pointer-chasing and call overhead per balancer. Mostly a
+  1T-2T constant-factor win now that padding fixed the contended range.
+- *Width tuning*: W = smallest power of 2 ≥ ⌈√n⌉ is a heuristic; W trades
+  per-balancer contention (smaller W) against depth (larger W). Worth a
+  sweep at n ≥ 16 on real multi-socket hardware.
+- *Bounded-unfairness variants*: the remaining ~4-6x gap to `spin`/`exp_spin`
+  at 8T is the price of ordered handoff itself, not implementation overhead
+  — closing it requires relaxing strict token order (e.g., a k-bounded
+  overtaking window), which is a semantics change, not an optimization.
