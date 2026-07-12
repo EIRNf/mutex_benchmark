@@ -55,6 +55,8 @@ class Constants:
             "wf_bitonic_bakery",
             "bo_bitonic_cas",
             "bo_periodic_cas",
+            "hb_bitonic_cas",
+            "hb_periodic_cas",
             "wf_periodic_cas",
             "wf_periodic_bl",
             "wf_periodic_lamport",

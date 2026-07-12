@@ -40,14 +40,16 @@ public:
             // This thread is the designated waker if 
             // a) the unlocker fucks up and doesn't realize anyone is waiting or
             // b) (more likely) if this thread is the first to get to the lock
+            unsigned spins = 0;
             while (thread_n_given_lock[thread_id] == false && thread_n_given_lock[num_threads] == false) {
-                // Busy wait
+                LockSpinWait(spins);
             }
             thread_n_given_lock[num_threads] = false;
             designated_waker_lock.unlock(thread_id);
         } else {
+            unsigned spins = 0;
             while (thread_n_given_lock[thread_id] == false) {
-                // Busy wait
+                LockSpinWait(spins);
             }
         }
         thread_n_given_lock[thread_id] = false;

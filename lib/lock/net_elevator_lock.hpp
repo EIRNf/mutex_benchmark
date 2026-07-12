@@ -371,8 +371,9 @@ public:
             // We are the designated waker.  Spin on EITHER our own flag
             // (meaning the unlocker granted us) OR the waker flag (meaning
             // the lock was free / the unlocker found nobody waiting).
+            unsigned spins = 0;
             while (*my_flag == false && *waker_flag == false) {
-                // busy wait
+                LockSpinWait(spins);
             }
             // Consume the waker flag.
             // CRITICAL: Fence between clearing waker_flag and unlocking the
@@ -385,8 +386,9 @@ public:
             waker_lock_.unlock();
         } else {
             // Not the waker — just spin on our own grant flag
+            unsigned spins = 0;
             while (*my_flag == false) {
-                // busy wait
+                LockSpinWait(spins);
             }
         }
         // Consume our grant flag

@@ -109,14 +109,16 @@ public:
         if (designated_waker_lock.trylock(thread_id)) {
             // Fence included in algorithm. TODO test
             FENCE();
+            unsigned spins = 0;
             while (flag[thread_id] == false && flag[num_threads] == false) {
-                // spin_delay_exponential(); // Wait (TODO test spin_delay_exp here)
+                LockSpinWait(spins);
             }
             flag[num_threads] = false;
             designated_waker_lock.unlock(thread_id);
         } else {
+            unsigned spins = 0;
             while (flag[thread_id] == false) {
-                // spin_delay_exponential(); // Wait (TODO test spin_delay_exp here)
+                LockSpinWait(spins);
             }
         }
         val[leaf(thread_id)] = num_threads;

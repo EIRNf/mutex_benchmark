@@ -331,6 +331,88 @@ filter loop and rename these to what they are (network-fronted ticket locks),
 or (c) keep them as-is for measuring "network + ticket" hybrid overhead —
 but the doc-comments in the source should be softened in any case.
 
+> **2026-07-12 registry cull**: the `rskew_*` mirror family (behaviorally
+> identical, as established above) and the incoherent software-sync hybrids
+> `seq/skew_*_{bl,lamport,bakery}` were removed from the codebase; `skew_*`
+> survives as `skew_bitonic_cas`/`skew_periodic_cas` under option (c).
+
+### 4c. Design F: Bounded-Overtaking Counting Lock — `bo_*` (added 2026-07-12)
+
+Every strictly-ordered lock in this file forms a *handoff chain*: waiter k
+cannot enter until waiter k−1 runs its unlock. When the next ticket holder
+is not ready — preempted, or still between its `fetch_add` and its slot
+registration — the entire chain stalls behind one thread. This is the
+dominant cost of ordered locks at high thread counts on asymmetric cores
+(§8.4, and the 8T columns of every measurement in
+`ELEVATOR_SET_COMPARISON.md`).
+
+Design F relaxes strict FIFO into **K-bounded overtaking**, exploiting the
+quiescence structure of the whole family: at (or near) quiescence every
+drawn ticket is registered, so the lock behaves *exactly* like a FIFO
+ticket lock at zero extra cost; the overtaking window opens only in the
+states where FIFO would have stalled.
+
+**Protocol** (Sequenced/Design-B skeleton — contiguous tokens are required,
+network tokens alone won't do because their gaps, though transient, are
+real at skip-decision time):
+
+- `lock()`: traverse the network (arrival staggering), draw
+  `seq = global_seq_.fetch_add(1)`, register `slot[seq mod S].token = seq`,
+  then spin on `now_serving_`:
+  - `now_serving_ == seq` → enter;
+  - `now_serving_ > seq` → **we were skipped**: re-draw a fresh ticket and
+    re-register (the network is *not* re-traversed — staggering is a
+    per-acquisition concern, not per-draw).
+- `unlock()` (`cur` = own token): grace-spin briefly for `cur+1`'s
+  registration (so transient skew doesn't cause re-draw churn); if absent,
+  scan `cur+2 .. cur+K` (K = n) and grant the **lowest registered** token
+  `t` by writing `now_serving_ = t`; if none, fall back to
+  `now_serving_ = cur+1` (classic ticket).
+
+**Why it is correct** (all verified empirically, 5 reps × {2,4,8}T clean):
+
+- *Mutual exclusion*: `now_serving_` has a single writer (the holder), and
+  entry requires exact equality with a unique token — one match per value.
+- *The grant IS the `now_serving_` write* — there is no per-thread grant
+  pointer or slot-grant write, which eliminates by construction the
+  stale-grant bug class that broke Design B.
+- *No lost thread*: a skipped registrant observes `now_serving_ > seq`
+  (monotonic, jumped over it) and re-draws; it can never block forever on a
+  skipped token, and never enters on one (`now_serving_` never *equals* a
+  skipped value).
+- *Fallback safety*: `now_serving_` is monotonic, so token `cur+1` was
+  never skipped-past; its current-or-future owner still takes it.
+- *Scan-vs-abandon race*: a registrant abandons a token only after
+  observing `now_serving_ >` it, which cannot happen for tokens in
+  `(cur, cur+K]` until this very unlock advances `now_serving_` — so the
+  scan reads stable registrations.
+
+**Complexity**: lock O(log²W) + 1 fetch_add (+ re-draws when skipped);
+unlock **O(1) when the successor is ready — the quiescent/common case —**
+and O(K) otherwise. Space O(4n·CL) slots + network.
+
+**Fairness semantics (the explicit trade)**: FIFO at quiescence; at most
+K−1 tokens overtaken per unlock; **no global starvation bound** — an
+unlucky thread can be skipped repeatedly under adversarial timing. This
+sits deliberately between the strict token order of WF/Seq and the
+unbounded unfairness of `spin`.
+
+### 4d. Design G: Heartbeat Overtaking — `hb_*` (added 2026-07-12)
+
+Design F's measurement showed its selection heuristic gains no scheduling
+information (registration = arrival, not liveness). Design G fixes exactly
+that: waiters stamp `slot.beat++` every spin iteration (single-writer, own
+cache line), and the stalled-successor path samples candidate beats twice
+across a ~256-spin grace gap, granting the lowest token whose beat
+advanced — i.e., a waiter provably scheduled *right now*. Fallback ladder:
+fresh-beat candidate → lowest registered (= Design F) → strict ticket.
+Correctness inherited from Design F verbatim (the heartbeat only refines
+*which* registered token is granted; the grant/skip/re-draw protocol is
+unchanged). Measured effect: the first ordered variant to beat the
+strict-order pack under oversubscription (~+10-25% at 12-16T, medians;
+±15% run noise), at a small moderate-contention cost from the per-spin
+store — see `ELEVATOR_SET_COMPARISON.md` §7.9.
+
 ---
 
 ## 5. Performance Analysis
@@ -513,7 +595,8 @@ n-slot filter.
 | WF (`wf_*`) | verified | argued (predecessor chain is total) | argued | linearizable token order | O(log²W × T_sync) + chain wait | **O(1)** | **bl/lamport/bakery yes** |
 | Seq (`seq_*`, repaired) | verified | argued (now_serving escape) | argued | linearizable (global RMW) | O(log²W × T_sync) + 1 RMW | **O(1)** + bounded handoff | no (global_seq_ is RMW) |
 | LW (`lw_*`, repaired) | verified | argued (§8.3 token conservation) | **argued only under fair scheduling** — flag polling is competitive, not queued | ≈ step-property order, unbounded skew possible | O(log²W × T_sync) | O(W) + SERVED cleanup | **bl/lamport/bakery yes** |
-| Skew/RSkew | verified | argued (ticket) | argued (ticket) | FIFO (ticket order, *not* filter order) | O(log²W) + (n−1)+1 RMW | O(1) | no |
+| Skew (`skew_*_cas`; RSkew removed 2026-07-12) | verified | argued (ticket) | argued (ticket) | FIFO (ticket order, *not* filter order) | O(log²W) + (n−1)+1 RMW | O(1) | no |
+| BO (`bo_*_cas`, Design F) | verified | argued (monotonic now_serving + ticket fallback) | **no** (K-bounded per unlock, unbounded overall) | FIFO at quiescence; ≤K−1 overtakes per unlock | O(log²W) + 1 RMW (+ re-draws) | O(1) ready / O(K) stalled | no |
 
 T_sync = per-balancer sync cost: O(1) for cas, O(n) doorway for bl/bakery,
 O(1)..O(n) for lamport (see BITONIC_NETWORKS_COMPLEXITY.md).

@@ -45,14 +45,16 @@ public:
             // a) the unlocker makes a mistake and doesn't realize anyone is waiting or
             // b) (more likely) if this thread is the first to get to the lock
             volatile bool *designated_waker_given_lock = get_thread_n_given_lock(num_threads);
+            unsigned spins = 0;
             while (*given_lock == false && *designated_waker_given_lock == false) {
-                // Busy wait
+                LockSpinWait(spins);
             }
             *designated_waker_given_lock = false;
             designated_waker_lock.unlock(thread_id);
         } else {
+            unsigned spins = 0;
             while (*given_lock == false) {
-                // Busy wait
+                LockSpinWait(spins);
             }
         }
         *given_lock = false;

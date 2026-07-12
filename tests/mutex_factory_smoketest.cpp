@@ -39,6 +39,8 @@ static const char *kDefaultNames[] = {
     "exp_spin",
     "halfnode",
     "hard_spin",
+    "hb_bitonic_cas",
+    "hb_periodic_cas",
     "hbo",
     "hclh",
     "hmcs",

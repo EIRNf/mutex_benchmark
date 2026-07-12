@@ -502,3 +502,183 @@ stall behind spinning waiters on asymmetric cores). All three compound.
   at 8T is the price of ordered handoff itself, not implementation overhead
   — closing it requires relaxing strict token order (e.g., a k-bounded
   overtaking window), which is a semantics change, not an optimization.
+
+### 7.7 Contribution Verdicts, Registry Cull, and Design F (2026-07-12)
+
+**Per-family contribution assessment** (what each family uniquely
+demonstrates; families with no unique contribution were culled):
+
+| Family | Contribution | Verdict |
+|---|---|---|
+| `bitonic_*` / `periodic_*` (10) | Reference Herlihy Ch.12 implementations; the cas/bakery endpoints span "RMW everywhere" to "RMW nowhere" | **Keep** — the pedagogical + baseline core |
+| `wf_*` (8) | Only correct O(1)-unlock + linearizable design; `wf_*_{bl,bakery}` are the repo's unique RMW-free + distributed + O(1)-unlock locks | **Keep all** — star family; sync dimension is the point |
+| `seq_*_cas` (2) | Hybrid: network as arrival-staggerer for a global ticket; strongest ordered lock at 4T post-repair | **Keep cas only** |
+| `seq_*_{bl,lamport,bakery}` (6) | None — paid O(n)-doorway per balancer *and* a global RMW: both weaknesses, neither demonstration | **REMOVED** |
+| `lw_*` (8) | Novel per-wire O(W)-unlock experiment (post-repair, liveness-preserving) | **Keep** — the only design exploiting the step property directly |
+| `skew_*_cas` (2) | Filter-overhead model (ordering is a ticket lock, §4b of the analysis doc) | **Keep cas only**, pending a real HSW §4 filter |
+| `skew_*_{bl,lamport,bakery}` (6) | Same incoherence as seq hybrids | **REMOVED** |
+| `rskew_*` (8) | None — byte-for-byte behaviorally identical to `skew_*` | **REMOVED** |
+| `bo_*_cas` (2, new) | Design F: K-bounded overtaking (below) | **Added** |
+| `net_elevator` | Independent flat-topology network + elevator handoff; also the template for flattening the recursive traverse | **Keep** |
+
+Registry: 52 → 32 network-lock names. Removed code is in git history.
+
+**Design F — bounded overtaking (`bo_bitonic_cas`, `bo_periodic_cas`)**:
+full design and correctness argument in `LINEARIZABLE_COUNTING_ANALYSIS.md`
+§4c. Summary: Seq skeleton; an unlocker whose immediate successor has not
+registered may grant the lowest registered token within a window of K = n
+tickets; skipped threads detect `now_serving > seq` and re-draw. FIFO at
+quiescence — the window opens only where strict FIFO would stall.
+
+**Measured (2026-07-12, same-session controls; note this session had heavy
+background load — mcs collapsed at 8T, so ratios not absolute numbers):**
+
+| Lock | 8T | 12T | 16T | per-thread max/min at 16T |
+|---|---:|---:|---:|---:|
+| `mcs` | 192.2K | ~16K | ~7K | **40-200x** (!) |
+| `ticket` | 316.6K | ~230K | ~165K | 1.0x |
+| `wf_bitonic_cas` | 882.6K | ~290K | ~180K | 1.0x |
+| `seq_periodic_cas` | 1.09M | ~260K | ~196K | 1.0x |
+| `bo_bitonic_cas` | 1.07M | ~185K | ~186K | 1.0x |
+| `spin` | 8.70M | ~7.4M | ~7.3M | 1.4-2.3x |
+
+Findings:
+1. **Under oversubscription (12-16T on ~8 effective cores) every yielding
+   ordered lock holds steady while MCS collapses catastrophically** — both
+   in throughput (2-18K) and fairness (its strict queue hands off to
+   descheduled threads; max/min per-thread ratio 40-200x). The §7.6
+   spin-then-yield is what puts the network locks in the surviving group.
+2. **Design F is correct, costs nothing in fairness (1.0 max/min in every
+   measured config), but does not beat WF/Seq** — at 8T it ties Seq; under
+   oversubscription it ties both. Root cause: its readiness signal is
+   *registration*, but a registered thread may itself be descheduled, so
+   skipping to a registered thread gains no scheduling information — and
+   spin-then-yield already absorbs most stall cost for strict-order locks.
+3. **Follow-up the result points to**: overtaking needs a *liveness* signal,
+   not an arrival signal — e.g. waiters stamp a per-slot heartbeat counter
+   each spin iteration, and the unlocker skips only tokens whose heartbeat
+   is stale. That would let the window target precisely the
+   preempted-successor case that motivates overtaking. Until then, `bo_*`
+   stands as a correct, fairness-neutral proof of the skip/re-draw protocol.
+
+### 7.8 Software/Hardware Tradeoff Across Families (measured 2026-07-12)
+
+Same methodology (1s, median of 3, breach detector armed, same session).
+Grouped by family × synchronization primitive requirement:
+
+| Lock | 1T | 2T | 4T | 8T | 12T | 16T |
+|---|---:|---:|---:|---:|---:|---:|
+| **hardware baselines** |
+| `mcs` | 23.85M | 7.08M | 5.15M | 120K | 3K | 6K |
+| `ticket` | 24.53M | 4.83M | 4.01M | 314K | 208K | 131K |
+| `spin` (unfair) | 26.45M | 15.37M | 8.14M | 8.43M | 7.88M | 8.53M |
+| **elevator, 1 TAS** |
+| `linear_cas_elevator` | 22.32M | 6.59M | 5.65M | 453K | 8K | 24K |
+| `tree_cas_elevator` | 25.65M | 8.05M | 4.93M | 214K | 6K | 23K |
+| `net_elevator` | 18.56M | 5.68M | 3.51M | 276K | 15K | 11K |
+| **elevator, RMW-free** |
+| `linear_bl_elevator` | 25.41M | 7.69M | 6.88M | 899K | 23K | 24K |
+| `linear_lamport_elevator` | 24.16M | 6.51M | 5.77M | 429K | 15K | 12K |
+| `tree_bl_elevator` | 23.63M | 7.30M | 5.21M | 466K | 6K | 17K |
+| `tree_lamport_elevator` | 22.93M | 6.40M | 3.53M | 408K | 11K | 18K |
+| **network, RMW (cas)** |
+| `bitonic_cas` | 22.88M | 5.64M | 1.49M | 746K | 248K | 171K |
+| `wf_bitonic_cas` | 23.86M | 7.06M | 1.31M | 549K | 237K | 187K |
+| `bo_bitonic_cas` | 16.64M | 7.04M | 1.62M | 456K | 272K | 180K |
+| `seq_periodic_cas` | 14.13M | 6.83M | 1.70M | 904K | 239K | 151K |
+| **network, RMW-free** |
+| `bitonic_bakery` | 19.34M | 4.17M | 695K | 543K | 248K | 175K |
+| `bitonic_bl` | 18.80M | 4.66M | 1.05M | 370K | 221K | 169K |
+| `wf_bitonic_bakery` | 24.06M | 7.40M | 965K | 874K | 231K | 177K |
+| `wf_bitonic_bl` | 24.14M | 8.26M | 1.20M | 413K | 257K | 173K |
+
+**Reading the software/hardware axis:**
+
+1. **RMW-freedom is essentially free on this machine, in both families.**
+   `linear_bl_elevator` (0 atomics) *beats* `linear_cas_elevator` at 8T
+   (899K vs 453K); `wf_bitonic_bakery` matches or beats `wf_bitonic_cas` at
+   8T+ (874K vs 549K). The classic assumption that software-only mutual
+   exclusion pays a large premium does not hold at these scales — O(n)
+   doorways over CL-padded flags are cheap compared to coherence traffic
+   on contended RMW lines.
+
+2. **The families separate by regime, not by primitive.** Moderate
+   contention (4T): elevator wins decisively (3.5-6.9M vs 0.7-1.7M) — a
+   single cheap serialization point beats O(log²W) balancer hops.
+   Oversubscription (12-16T): the network locks hold 150-270K while every
+   elevator variant collapses to 6-24K alongside MCS (3-6K) — a 10-40x
+   inversion.
+
+3. **Caveat — the 12-16T inversion is largely the yield asymmetry, not
+   topology.** The §7.6 spin-then-yield was applied to the network locks'
+   grant waits only; the elevator family still pure-spins, so under
+   oversubscription its waiters burn the cores its handoff chain needs
+   (same failure as MCS). The obvious next improvement is porting
+   spin-then-yield to the elevator/tree wait loops — expect them to rejoin
+   the ~150-300K survivor group, at which point the remaining differences
+   would reflect topology honestly.
+
+4. `ticket` remains the pound-for-pound robustness champion among classical
+   locks (131-208K at 12-16T with 2 lines of state) — a useful humility
+   baseline: the network machinery currently buys ~15-40% over ticket
+   under oversubscription, contention distribution on the lock path, and
+   O(1) unlock (WF), but nothing transformative on a single socket. The
+   family's differentiating claims remain RMW-freedom + distribution
+   (unique to the network locks) and NUMA/CXL locality (untested here —
+   needs the real hardware this repo targets).
+
+### 7.9 Yield Port to the Elevator Family + Design G (2026-07-12)
+
+**Elevator yield port.** The §7.8 caveat was tested directly: spin-then-yield
+(`LockSpinWait`, lock.hpp) was ported to the lock-layer grant waits of all
+six elevator implementations (linear/tree × cas/bl/lamport variants share
+files, plus `net_elevator`; `elevator` already yielded every spin). Same
+methodology, same session:
+
+| Lock (post-port) | 4T | 8T | 12T | 16T |
+|---|---:|---:|---:|---:|
+| `mcs` (untouched control) | 4.39M | 840K | 15K | 12K |
+| `ticket` | 3.11M | 803K | 160K | 53K |
+| `linear_lamport_elevator` | 3.77M | 981K | 189K | 107K |
+| `tree_lamport_elevator` | 4.68M | 1.06M | 250K | 107K |
+| `tree_bl_elevator` | 5.08M | 971K | 229K | 82K |
+| `net_elevator` | 4.74M | 863K | 175K | 88K |
+| `wf_bitonic_cas` | 3.92M | 1.04M | 243K | 87K |
+| `bo_bitonic_cas` | 4.87M | 1.12M | 180K | 107K |
+
+The elevator family rejoined the survivor band (was 6-24K at 12-16T before
+the port — a 5-40x recovery), confirming §7.8's caveat: the earlier
+oversubscription gap between families was the yield asymmetry, not
+topology. Post-port, elevator and network locks are within noise of each
+other at every thread count; `tree_lamport_elevator` (RMW-free) is now one
+of the best ordered locks at 12T. MCS, deliberately untouched as the
+control, still collapses.
+
+**Design G — heartbeat overtaking (`hb_bitonic_cas`, `hb_periodic_cas`).**
+Implements the §7.7 follow-up: waiters stamp a per-slot heartbeat counter
+every spin iteration; an unlocker whose successor is absent samples
+candidate beats twice across a ~256-spin grace gap and grants the lowest
+token whose beat *advanced* — a thread provably scheduled at that instant —
+falling back to lowest-registered (= Design F), then to strict ticket.
+Correctness is inherited from Design F verbatim (any registered token in
+the window is a valid grant; the heartbeat only changes which is chosen).
+Verified: 30/30 breach-detecting runs clean at 2/4/8T.
+
+Measured (3 reps each, same session):
+
+| T | `ticket` | `wf_bitonic_cas` | `seq_periodic_cas` | `bo` (F) | `hb_bitonic` (G) | `hb_periodic` (G) |
+|---|---:|---:|---:|---:|---:|---:|
+| 4 | 5.48M | 5.39M | 5.34M | 5.74M | 4.29M | 5.74M |
+| 8 | 741K | 1.08M | 1.16M | 1.16M | 1.09M | 760K |
+| 12 | 219K | 251K | 277K | 262K | **319K** | 246K |
+| 16 | 160K | 182K | 186K | 191K | 184K | **205K** |
+
+Verdict: **the liveness hypothesis holds, with modest effect size.** In the
+oversubscribed regime Design G is the first ordered variant to pull ahead
+of the strict-order pack (~+10-25% at 12-16T, medians), where Design F
+(arrival-signal only) merely tied it — while paying a small 4T cost for the
+per-spin heartbeat store. Run-to-run spread is ±15%, so treat the 12T edge
+as directional; the 16T lead reproduces across both hb variants. On a
+machine where sched_yield were unavailable or slower (or with pinned
+threads and real preemption), the heartbeat's targeting should matter
+proportionally more.

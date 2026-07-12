@@ -52,9 +52,13 @@ multiplies the balancer count.
 critical section at 2/4/8 threads — see `ELEVATOR_SET_COMPARISON.md` §7.4):**
 - All 10 base `bitonic_*`/`periodic_*` variants: **correct** at all thread counts.
 - All 8 `wf_*` (Design C, Waiting-Filter): **correct** at all thread counts.
-- All 16 `skew_*`/`rskew_*`: **correct** (but see the note in
+- `skew_*` variants: **correct** (but see the note in
   `LINEARIZABLE_COUNTING_ANALYSIS.md` §4b — the skew filter is vestigial and
-  ordering is enforced by an embedded ticket lock).
+  ordering is enforced by an embedded ticket lock). The `rskew_*` mirror
+  family was removed 2026-07-12 as behaviorally identical (see registry
+  below).
+- `bo_bitonic_cas`/`bo_periodic_cas` (Design F, added 2026-07-12): correct,
+  5 reps × {2,4,8}T clean — see `LINEARIZABLE_COUNTING_ANALYSIS.md` §4c.
 - All 8 `lw_*` (Design A, Wire-Indexed): **repaired 2026-07-11** (previously
   hung at every thread count ≥ 2); now correct, 5 reps × {2,4,8}T clean. See
   `LINEARIZABLE_COUNTING_ANALYSIS.md` §8.3 for the root causes and fix.
@@ -233,9 +237,9 @@ must be serialised**.  This can be achieved through:
 
 ## Lock Name Registry
 
-All names below are registered in `lib/utils/bench_utils.cpp`. Every family is
-the full cross product {bitonic, periodic} × {cas, bl, lamport, bakery} (the
-base family additionally has an `elevator` sync variant).
+All names below are registered in `lib/utils/bench_utils.cpp`. 34 network
+lock names total after the 2026-07-12 redundancy cull and the Design F/G
+additions (see below).
 
 Base counting locks (bitonic_networks.hpp) — all correct:
 ```
@@ -245,16 +249,29 @@ periodic_cas       periodic_bl        periodic_lamport
 periodic_elevator  periodic_bakery
 ```
 
-Linearizable counting locks (linearizable_counting_lock.hpp):
+Linearizable counting locks (linearizable_counting_lock.hpp) — all correct:
 ```
-wf_*   (correct):  wf_bitonic_{cas,bl,lamport,bakery}    wf_periodic_{cas,bl,lamport,bakery}
-seq_*  (correct — repaired 2026-07-11):
-                   seq_bitonic_{cas,bl,lamport,bakery}   seq_periodic_{cas,bl,lamport,bakery}
-lw_*   (correct — repaired 2026-07-11):
-                   lw_bitonic_{cas,bl,lamport,bakery}    lw_periodic_{cas,bl,lamport,bakery}
-skew_* / rskew_* (correct; behaviorally ticket locks — see LINEARIZABLE_COUNTING_ANALYSIS.md §4b):
-                   skew_bitonic_{cas,bl,lamport,bakery}  skew_periodic_{cas,bl,lamport,bakery}
-                   rskew_bitonic_{cas,bl,lamport,bakery} rskew_periodic_{cas,bl,lamport,bakery}
+wf_*  (Design C, Waiting-Filter):   wf_bitonic_{cas,bl,lamport,bakery}
+                                    wf_periodic_{cas,bl,lamport,bakery}
+seq_* (Design B, Sequenced):        seq_bitonic_cas   seq_periodic_cas
+lw_*  (Design A, Wire-Indexed):     lw_bitonic_{cas,bl,lamport,bakery}
+                                    lw_periodic_{cas,bl,lamport,bakery}
+skew_* (ticket + filter-overhead model — see LINEARIZABLE_COUNTING_ANALYSIS.md §4b):
+                                    skew_bitonic_cas  skew_periodic_cas
+bo_*  (Design F, Bounded-Overtaking, added 2026-07-12):
+                                    bo_bitonic_cas    bo_periodic_cas
+hb_*  (Design G, Heartbeat-Overtaking, added 2026-07-12):
+                                    hb_bitonic_cas    hb_periodic_cas
 ```
 
 Related (own files, see File Map): `net_elevator`, `hmcs`.
+
+**Removed 2026-07-12 (redundancy cull, 52 → 32 names):**
+- All 8 `rskew_*`: `ReverseSkewFilterCountingLock` was byte-for-byte
+  behaviorally identical to the Skew lock (only a discarded value's sign
+  differed) — benchmarking both produced no information.
+- `seq_*_{bl,lamport,bakery}` and `skew_*_{bl,lamport,bakery}` (12):
+  incoherent hybrids — they paid the O(n)-doorway software-sync cost at
+  every balancer and then performed a global atomic fetch_add anyway,
+  combining the weakness of both worlds while demonstrating neither.
+Old code remains in git history.

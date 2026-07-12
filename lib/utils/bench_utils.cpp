@@ -343,6 +343,8 @@ static const std::unordered_map<std::string, std::function<SoftwareMutex*()>> kM
     {"seq_periodic_cas", MK(SeqPeriodicCASLock)},
     {"bo_bitonic_cas", MK(BoBitonicCASLock)},
     {"bo_periodic_cas", MK(BoPeriodicCASLock)},
+    {"hb_bitonic_cas", MK(HbBitonicCASLock)},
+    {"hb_periodic_cas", MK(HbPeriodicCASLock)},
     {"wf_bitonic_cas", MK(WFBitonicCASLock)},
     {"wf_bitonic_bl", MK(WFBitonicBLLock)},
     {"wf_bitonic_lamport", MK(WFBitonicLamportLock)},

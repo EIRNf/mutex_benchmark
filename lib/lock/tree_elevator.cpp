@@ -112,14 +112,16 @@ public:
             // Fence included in algorithm. TODO test
             Fence();
             volatile bool *designated_waker_flag = get_flag(num_threads);
+            unsigned spins = 0;
             while (*my_flag == false && *designated_waker_flag == false) {
-                // spin_delay_exponential(); // Wait (TODO test spin_delay_exp here)
+                LockSpinWait(spins);
             }
             *designated_waker_flag = false;
             designated_waker_lock.unlock(thread_id);
         } else {
+            unsigned spins = 0;
             while (*my_flag == false) {
-                // spin_delay_exponential(); // Wait (TODO test spin_delay_exp here)
+                LockSpinWait(spins);
             }
         }
         val[leaf(thread_id)] = num_threads;

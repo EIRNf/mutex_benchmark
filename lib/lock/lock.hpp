@@ -54,6 +54,25 @@
 #include <semaphore>
 #include "../utils/bench_utils.hpp"
 
+// ─── Spin-then-yield for lock-layer grant waits ──────────────────────────────
+// Pure spinning collapses once runnable threads outnumber the (performance)
+// cores: a spinner burns the cycles its predecessor in the handoff chain
+// needs to reach its own unlock (measured: the elevator family and MCS drop
+// to ~3-25K ops/s at 12-16T on an ~8-core machine while yielding locks hold
+// 150-300K — see ELEVATOR_SET_COMPARISON.md §7.8). Yielding every ~1K spins
+// is unreachable on the uncontended fast path and does not change who
+// acquires next, only when a waiting core is ceded. Use for lock-layer
+// waits; leave short bounded doorway waits as pure spins.
+#if defined(__aarch64__) || defined(_M_ARM64)
+  #define LockSpinHint() __asm__ volatile("yield")
+#elif defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+  #define LockSpinHint() __asm__ volatile("pause")
+#else
+  #define LockSpinHint() ((void)0)
+#endif
+#define LockSpinWait(spins) \
+    do { if (((++(spins)) & 1023) == 0) sched_yield(); else LockSpinHint(); } while (0)
+
 
 class SoftwareMutex {
 public:
