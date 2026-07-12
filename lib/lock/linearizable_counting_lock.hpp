@@ -625,6 +625,229 @@ public:
 
 
 // =============================================================================
+// SECTION 2.5: Bounded-Overtaking Counting Lock  (Design F)
+//
+// Motivation: every strictly-ordered lock in this file forms a handoff
+// chain — waiter k cannot proceed until waiter k-1 runs. If the next
+// ticket holder is not ready (preempted, or still inside the network
+// between its fetch_add and its registration), the whole chain stalls
+// behind one thread. This lock relaxes strict FIFO into K-BOUNDED
+// OVERTAKING: an unlocker that finds its immediate successor unregistered
+// may grant the lowest *registered* token within a window of K tickets,
+// skipping unready holders. Skipped threads detect the skip and re-draw a
+// fresh ticket.
+//
+// The quiescence connection: at (or near) quiescence every drawn ticket is
+// registered, so the window scan finds cur+1 immediately and the lock
+// degenerates to an exact FIFO ticket lock with zero extra cost. The
+// window only opens — and fairness only bends — precisely when strict
+// ordering would have stalled the chain.
+//
+// Protocol (built on the Sequenced/Design-B skeleton; contiguous tokens):
+//   lock():
+//     1. traverse network (arrival staggering, as Design B)
+//     2. seq = global_seq_.fetch_add(1)          — contiguous ticket
+//     3. slot[seq % S].token = seq               — "I have arrived"
+//     4. spin: now_serving_ == seq   -> enter CS
+//              now_serving_  > seq   -> we were skipped: goto 2 (re-draw)
+//   unlock():  (cur = now_serving_)
+//     1. brief grace spin: is slot[cur+1] registered? if yes -> serve cur+1
+//     2. else scan cur+2 .. cur+K for the lowest registered token t
+//        -> now_serving_ = t   (this write IS the grant; skipped tokens in
+//           (cur, t) observe now_serving_ > seq and re-draw)
+//     3. else now_serving_ = cur+1 — classic ticket fallback; safe because
+//        now_serving_ is monotonic, so cur+1 was never skipped-past and
+//        its (current or future) owner still wants it.
+//
+// Correctness:
+//   - Mutual exclusion: now_serving_ is written only by the lock holder
+//     and a thread enters only on now_serving_ == seq with unique seq —
+//     single writer, single equality match per value.
+//   - No lost thread: a skipped registrant never blocks forever — it sees
+//     now_serving_ > seq (monotonic, jumped over it) and re-draws.
+//   - No stale-grant hazard by construction: the grant is the shared
+//     now_serving_ write itself; there is no per-thread grant pointer.
+//   - Livelock/starvation: overtaking is bounded by K per unlock, but a
+//     thread can in principle be skipped repeatedly (each time re-drawing
+//     a larger ticket). Under fair scheduling it wins; under adversarial
+//     timing this is weaker than FIFO — that is the semantics trade, made
+//     explicit. K = num_threads (covers all possible in-flight tickets).
+//
+// Complexity:
+//   Lock:   O(log²W) network + 1 fetch_add (+ re-draws when skipped)
+//   Unlock: O(1) when successor ready (the common/quiescent case);
+//           O(K) scan when it is not
+//   Fairness: FIFO at quiescence; K-bounded overtaking per unlock under
+//             concurrency; no global starvation bound.
+// =============================================================================
+
+template <typename Sync, template <typename> class NetworkT>
+class BoundedOvertakingCountingLock : public virtual SoftwareMutex {
+public:
+    void init(size_t num_threads) override {
+        num_threads_ = num_threads;
+
+        size_t target = (size_t)std::ceil(std::sqrt((double)num_threads));
+        if (target < 2) target = 2;
+        width_ = 1;
+        while (width_ < target) width_ *= 2;
+
+        // Slot array: power of 2, >= 4n so live tokens (span <= n, one per
+        // thread) can never collide on a slot (same argument as Design B).
+        num_slots_ = 1;
+        while (num_slots_ < 4 * num_threads) num_slots_ *= 2;
+        slot_mask_ = num_slots_ - 1;
+
+        // Overtaking window: all possibly-in-flight tickets.
+        window_ = num_threads;
+
+        network_.build(width_, num_threads);
+
+        size_t now_serving_bytes = CL;
+        size_t slot_bytes        = num_slots_ * CL;
+        region_size_ = CL + now_serving_bytes + slot_bytes;
+        region_ = (volatile char*)ALLOCATE(region_size_);
+
+        size_t off = CL;  // leading pad
+        now_serving_ = (volatile size_t*)&region_[off];  off += now_serving_bytes;
+        slot_base_   = &region_[off];
+
+        global_seq_.store(0, std::memory_order_relaxed);
+        *now_serving_ = 0;
+        for (size_t i = 0; i < num_slots_; i++) {
+            get_slot(i)->token = NO_TOKEN;
+        }
+        initialized_ = true;
+    }
+
+    void lock(size_t thread_id) override {
+        // Network traversal once per acquisition (not per re-draw): its
+        // role is arrival staggering, which a re-draw does not need.
+        network_.traverse((int)(thread_id % width_), thread_id);
+
+        for (;;) {
+            size_t seq = global_seq_.fetch_add(1, std::memory_order_relaxed);
+            get_slot(seq & slot_mask_)->token = seq;   // register: "arrived"
+            Fence();
+
+            unsigned spins = 0;
+            for (;;) {
+                size_t serving = *now_serving_;
+                if (serving == seq) {
+                    Fence();
+                    return;                       // our turn
+                }
+                if ((ssize_t)(serving - seq) > 0) {
+                    break;                        // skipped: re-draw
+                }
+                LcSpinWait(spins);
+            }
+        }
+    }
+
+    void unlock(size_t /*thread_id*/) override {
+        size_t cur = *now_serving_;
+        size_t next = cur + 1;
+        auto* nse = get_slot(next & slot_mask_);
+
+        // Grace period: give the immediate successor a moment to register
+        // before considering overtaking, so transient timing skew does not
+        // cause re-draw churn.
+        for (int i = 0; i < HANDOFF_SPINS; i++) {
+            if (nse->token == next) {
+                Fence();
+                *now_serving_ = next;
+                Fence();
+                return;
+            }
+            LcSpinHint();
+        }
+
+        // Successor not ready: grant the lowest registered ticket in
+        // (cur+1, cur+window_]. Registrants cannot abandon tokens in this
+        // range concurrently — abandonment requires now_serving_ > token,
+        // and we have not advanced now_serving_ yet.
+        for (size_t t = next + 1; t <= cur + window_; t++) {
+            if (get_slot(t & slot_mask_)->token == t) {
+                Fence();
+                *now_serving_ = t;   // the grant; skipped tokens re-draw
+                Fence();
+                return;
+            }
+        }
+
+        // Nobody registered in the window: classic ticket fallback. Token
+        // cur+1 was never skipped-past (now_serving_ is monotonic), so its
+        // owner — current or the next thread to draw it — still takes it.
+        Fence();
+        *now_serving_ = next;
+        Fence();
+    }
+
+    void destroy() override {
+        if (!initialized_) return;
+        initialized_ = false;
+        network_.destroy();
+        if (region_) {
+            FREE((void*)region_, region_size_);
+            region_ = nullptr;
+        }
+    }
+
+    std::string name() override {
+        return std::string("bo_counting_") + Sync::sync_name();
+    }
+
+private:
+    static constexpr size_t CL = std::hardware_destructive_interference_size;
+    static constexpr size_t NO_TOKEN = ~(size_t)0;
+    static constexpr int HANDOFF_SPINS = 64;
+
+    struct SlotEntry {
+        volatile size_t token;   // highest sequence number registered here
+    };
+
+    NetworkT<Sync> network_;
+    size_t num_threads_ = 0;
+    size_t width_       = 0;
+    size_t num_slots_   = 0;
+    size_t slot_mask_   = 0;
+    size_t window_      = 0;
+
+    std::atomic<size_t> global_seq_{0};
+
+    volatile char*   region_      = nullptr;
+    size_t           region_size_ = 0;
+    volatile size_t* now_serving_ = nullptr;
+    volatile char*   slot_base_   = nullptr;
+
+    bool initialized_ = false;
+
+    SlotEntry* get_slot(size_t idx) const {
+        return (SlotEntry*)&slot_base_[idx * CL];
+    }
+};
+
+template <typename Sync>
+class BoBitonicLock
+    : public BoundedOvertakingCountingLock<Sync, BitonicNetwork> {
+public:
+    std::string name() override {
+        return std::string("bo_bitonic_") + Sync::sync_name();
+    }
+};
+
+template <typename Sync>
+class BoPeriodicLock
+    : public BoundedOvertakingCountingLock<Sync, PeriodicNetwork> {
+public:
+    std::string name() override {
+        return std::string("bo_periodic_") + Sync::sync_name();
+    }
+};
+
+
+// =============================================================================
 // SECTION 3: Waiting-Filter Counting Lock  (Design C)
 //
 // From Herlihy, Shavit, Waarts (1996), Section 3: "The Waiting Network"
@@ -951,142 +1174,16 @@ public:
 
 
 // =============================================================================
-// SECTION 4.5: Reverse-Skew-Filter Counting Lock  (Design E)
+// SECTION 4.5 (REMOVED 2026-07-12): Reverse-Skew-Filter Counting Lock
 //
-// ⚠ IMPLEMENTATION STATUS — same caveat as the Skew lock above: the filter
-// traversal is an OVERHEAD MODEL whose output (`row`) is discarded; ordering
-// comes from the global_seq_/now_serving_ ticket pair. Because the discarded
-// row walk is the only difference from SkewFilterCountingLock (decrement vs
-// increment), the two locks are behaviorally identical as implemented. The
-// HSW §4.2 properties described below (wait-freedom of the filter,
-// Theorem 4.10 layer depth) apply to the referenced design, NOT to this code.
-//
-// ── Original design intent (HSW §4.2, kept for reference) ──
-// The Reverse-skew-filter is the mirror image of the Skew-filter: a token
-// entering on a high wire drops toward wire 0, picking up its output wire
-// along the way, exiting after at most O(n²/w) balancers — the filter itself
-// is wait-free (no starvation), unlike the Skew filter. Theorem 4.10: with
-// d ≥ ⌈(n-1)/2⌉·w - 1 layer depth it solves linearizable counting.
-//
-// Complexity as implemented:
-//   Lock:   O(log²W) network + (n-1) filter fetch_adds + 1 ticket fetch_add
-//   Unlock: O(1) — now_serving_.fetch_add
-//   Space:  O((W+n)·(n-1)) toggle slots + network
+// ReverseSkewFilterCountingLock was removed: as implemented it was
+// byte-for-byte behaviorally identical to SkewFilterCountingLock (the only
+// difference was the sign applied to a value that both classes discard), so
+// benchmarking both produced no information. If the real HSW §4.2
+// reverse-skew filter (wait-free, Theorem 4.10) is ever implemented — i.e.
+// the filter output actually determines ordering — it deserves a fresh
+// class, not a resurrection of this one. See git history for the old code.
 // =============================================================================
-
-template <typename Sync, template <typename> class NetworkT>
-class ReverseSkewFilterCountingLock : public virtual SoftwareMutex {
-public:
-    void init(size_t num_threads) override {
-        num_threads_ = num_threads;
-
-        size_t target = (size_t)std::ceil(std::sqrt((double)num_threads));
-        if (target < 2) target = 2;
-        width_ = 1;
-        while (width_ < target) width_ *= 2;
-
-        filter_rows_ = width_ + num_threads;
-        layer_depth_ = (num_threads > 1) ? (num_threads - 1) : 1;
-
-        network_.build(width_, num_threads);
-
-        // Allocate toggle array via the CXL-aware allocator (see the note
-        // in SkewFilterCountingLock::init).
-        size_t toggle_count = filter_rows_ * layer_depth_;
-        toggles_bytes_ = toggle_count * sizeof(std::atomic<size_t>);
-        toggles_ = (std::atomic<size_t>*)ALLOCATE(toggles_bytes_);
-        for (size_t i = 0; i < toggle_count; i++) {
-            toggles_[i].store(0, std::memory_order_relaxed);
-        }
-
-        global_seq_.store(0, std::memory_order_relaxed);
-        now_serving_.store(0, std::memory_order_relaxed);
-        initialized_ = true;
-    }
-
-    void lock(size_t thread_id) override {
-        // 1. Traverse counting network
-        size_t lv = 0;
-        network_.traverse((int)(thread_id % width_), thread_id, &lv);
-
-        // 2. Traverse the mirrored filter grid. `row` is discarded (see
-        //    the section comment) — this walk models cost, not ordering.
-        //    Reverse-layer topology:
-        //      toggle even -> south (stay at current row)
-        //      toggle odd  -> north (move up to row r-1)
-        size_t lv_wire = (size_t)(lv & 1);
-        size_t lv_round = lv >> 1;
-        size_t row = lv_round * width_ + lv_wire;
-
-        for (size_t layer = 0; layer < layer_depth_; layer++) {
-            size_t folded = row % filter_rows_;
-            size_t idx = folded * layer_depth_ + layer;
-            size_t val = toggles_[idx].fetch_add(1, std::memory_order_acq_rel);
-            if (val & 1) {
-                if (row > 0) row = row - 1;
-            }
-        }
-
-        // 3. Ticket allocation
-        size_t ticket = global_seq_.fetch_add(1, std::memory_order_relaxed);
-
-        // 4. Spin until now_serving matches our ticket
-        unsigned spins = 0;
-        while (now_serving_.load(std::memory_order_acquire) != ticket) {
-            LcSpinWait(spins);
-        }
-    }
-
-    void unlock(size_t /*thread_id*/) override {
-        now_serving_.fetch_add(1, std::memory_order_release);
-    }
-
-    void destroy() override {
-        if (!initialized_) return;
-        initialized_ = false;
-        network_.destroy();
-        FREE((void*)toggles_, toggles_bytes_);
-        toggles_ = nullptr;
-    }
-
-    std::string name() override {
-        return std::string("rskew_counting_") + Sync::sync_name();
-    }
-
-private:
-    NetworkT<Sync> network_;
-    size_t num_threads_  = 0;
-    size_t width_        = 0;
-    size_t filter_rows_  = 0;
-    size_t layer_depth_  = 0;
-
-    std::atomic<size_t>* toggles_   = nullptr;
-    size_t toggles_bytes_ = 0;
-    std::atomic<size_t>  global_seq_{0};
-    std::atomic<size_t>  now_serving_{0};
-
-    bool initialized_ = false;
-};
-
-// Named specializations per network type
-
-template <typename Sync>
-class RSkewBitonicLock
-    : public ReverseSkewFilterCountingLock<Sync, BitonicNetwork> {
-public:
-    std::string name() override {
-        return std::string("rskew_bitonic_") + Sync::sync_name();
-    }
-};
-
-template <typename Sync>
-class RSkewPeriodicLock
-    : public ReverseSkewFilterCountingLock<Sync, PeriodicNetwork> {
-public:
-    std::string name() override {
-        return std::string("rskew_periodic_") + Sync::sync_name();
-    }
-};
 
 
 // =============================================================================
@@ -1108,14 +1205,14 @@ using LWPeriodicBakeryLock   = WireIndexedPeriodicLock<BnBakerySync>;
 //TODO: DOES NOT WORK
 // ── Design B: Sequenced (guaranteed O(1) unlock) ────────────────────────────
 using SeqBitonicCASLock      = SeqBitonicLock<BnCASSync>;
-using SeqBitonicBLLock       = SeqBitonicLock<BnBLSync>;
-using SeqBitonicLamportLock  = SeqBitonicLock<BnLamportSync>;
-using SeqBitonicBakeryLock   = SeqBitonicLock<BnBakerySync>;
 
 using SeqPeriodicCASLock      = SeqPeriodicLock<BnCASSync>;
-using SeqPeriodicBLLock       = SeqPeriodicLock<BnBLSync>;
-using SeqPeriodicLamportLock  = SeqPeriodicLock<BnLamportSync>;
-using SeqPeriodicBakeryLock   = SeqPeriodicLock<BnBakerySync>;
+
+// Bounded-overtaking (Design F) — CAS only: it requires a global fetch_add
+// ticket, so software-sync balancer variants would be incoherent hybrids
+// (the same reason the seq_*/skew_* non-CAS variants were removed).
+using BoBitonicCASLock  = BoBitonicLock<BnCASSync>;
+using BoPeriodicCASLock = BoPeriodicLock<BnCASSync>;
 
 // ── Design C: Waiting-Filter (O(1) unlock, phase-bit chain) ─────────────────
 using WFBitonicCASLock      = WFBitonicLock<BnCASSync>;
@@ -1131,24 +1228,10 @@ using WFPeriodicBakeryLock   = WFPeriodicLock<BnBakerySync>;
 
 // ── Design D: Skew-Filter (non-blocking linearizable, O(n) avg depth) ───────
 using SkewBitonicCASLock      = SkewBitonicLock<BnCASSync>;
-using SkewBitonicBLLock       = SkewBitonicLock<BnBLSync>;
-using SkewBitonicLamportLock  = SkewBitonicLock<BnLamportSync>;
-using SkewBitonicBakeryLock   = SkewBitonicLock<BnBakerySync>;
 
 using SkewPeriodicCASLock      = SkewPeriodicLock<BnCASSync>;
-using SkewPeriodicBLLock       = SkewPeriodicLock<BnBLSync>;
-using SkewPeriodicLamportLock  = SkewPeriodicLock<BnLamportSync>;
-using SkewPeriodicBakeryLock   = SkewPeriodicLock<BnBakerySync>;
 
 // ── Design E: Reverse-Skew-Filter (wait-free linearizable, O(n) depth) ──────
-using RSkewBitonicCASLock      = RSkewBitonicLock<BnCASSync>;
-using RSkewBitonicBLLock       = RSkewBitonicLock<BnBLSync>;
-using RSkewBitonicLamportLock  = RSkewBitonicLock<BnLamportSync>;
-using RSkewBitonicBakeryLock   = RSkewBitonicLock<BnBakerySync>;
 
-using RSkewPeriodicCASLock      = RSkewPeriodicLock<BnCASSync>;
-using RSkewPeriodicBLLock       = RSkewPeriodicLock<BnBLSync>;
-using RSkewPeriodicLamportLock  = RSkewPeriodicLock<BnLamportSync>;
-using RSkewPeriodicBakeryLock   = RSkewPeriodicLock<BnBakerySync>;
 
 #endif // LINEARIZABLE_COUNTING_LOCK_HPP
