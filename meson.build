@@ -7,6 +7,7 @@ project(
 )
 
 subdir('lib')
+subdir('preload')
 subdir('apps')
 subdir('tests')
 

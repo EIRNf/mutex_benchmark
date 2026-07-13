@@ -13,3 +13,5 @@ region_layout_test = executable(
 )
 
 test('region_layout_test', region_layout_test)
+
+subdir('preload')

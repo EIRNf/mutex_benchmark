@@ -178,3 +178,85 @@ case $? in 137) echo HANG;; 0) grep -q breached /tmp/out && echo BREACH || echo 
 ./build/apps/max_contention_bench/max_contention_bench bo_bitonic_cas 8 1.0 --thread-level --csv \
   | awk -F, 'NF==3 {if(min==""||$3<min)min=$3; if($3>max)max=$3} END{print "min="min" max="max" ratio="max/min}'
 ```
+
+## Injecting locks into existing applications (LD_PRELOAD / DYLD)
+
+`preload/libmutex_preload.{so,dylib}` transparently replaces the pthread
+mutexes of an **unmodified, dynamically linked** application with any lock
+from this suite (same names as `get_mutex()` / the `-s` selection sets). No
+recompilation of the target: on Linux it is injected with `LD_PRELOAD`, on
+macOS with `DYLD_INSERT_LIBRARIES` (dyld interposing).
+
+```bash
+meson setup build && meson compile -C build
+
+# Convenience wrapper (picks the right env var per platform):
+scripts/with_lock.sh mcs ./my_server --port 8080
+scripts/with_lock.sh -S -n 64 -s app wf_bitonic_cas ./sqlite_bench
+
+# Raw environment (Linux):
+MUTEX_SHIM_LOCK=mcs MUTEX_SHIM_STATS=1 \
+  LD_PRELOAD=$PWD/build/preload/libmutex_preload.so ./my_app
+```
+
+### How it works
+
+The shim follows the LiTL approach (*"Multicore Locks: The Case Is Not
+Closed Yet"*, USENIX ATC'16): on first sight of a `pthread_mutex_t` it
+"claims" it by overwriting its first 16 bytes with a magic word plus a
+pointer to a wrapper (glibc mutexes are ≥40 bytes, macOS 64), so the hot
+path is one atomic load — no hash map. Claimed mutexes never touch the real
+pthread implementation again. Threads receive dense ids in
+`[0, MUTEX_SHIM_MAX_THREADS)` on first use (recycled at thread exit, so
+thread-pool churn is fine — the pool only limits *concurrent* threads).
+`pthread_cond_wait` is re-implemented with a per-mutex *shadow* real mutex so
+a waiter never sleeps while holding the injected lock; `signal`/`broadcast`
+serialize on the shadow, which closes the lost-wakeup window LiTL accepts.
+Recursive/errorcheck mutexes are handled by owner/depth emulation in the
+wrapper. Process-shared, robust, and priority-protocol mutexes are detected
+at `pthread_mutex_init` and left on the real implementation.
+
+### Environment variables
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MUTEX_SHIM_LOCK` | *(unset = inert)* | lock to inject (`mcs`, `ticket`, `wf_bitonic_cas`, ...) |
+| `MUTEX_SHIM_MAX_THREADS` | `128` | dense thread-id pool; also `init(N)` for every claimed lock. Aborts loudly if exceeded *concurrently* |
+| `MUTEX_SHIM_SCOPE` | `all` | `all` = every claimable mutex; `app` = only mutexes first locked from the main executable's text (`MUTEX_SHIM_TARGET_LIBS=substr,substr` widens this); `region` = only mutexes living in tracked `mmap` regions (`MUTEX_SHIM_REGION_FLAGS=shared\|anon\|all`) or `mbind()`-ed NUMA/CXL ranges (Linux) |
+| `MUTEX_SHIM_STATS` / `MUTEX_SHIM_STATS_FILE` | off / stderr | dump claim/acquisition/cond-wait counters at exit — check `claimed_mutexes`/`shim_acquisitions` to confirm interception actually happened |
+| `MUTEX_SHIM_FENCE` | `1` | full fence after acquire / before release. The benchmark validates locks under `Fence()`-instrumented critical sections; some locks (e.g. `mcs`, whose handoff is a plain volatile store) rely on that and lose critical-section writes on arm64 without it. Disable only for locks with self-contained acquire/release semantics |
+| `MUTEX_SHIM_COND_STRICT` | `1` | `0` reverts to LiTL-level condvar handling (tiny lost-wakeup window, less signal overhead) |
+| `MUTEX_SHIM_LOG` / `MUTEX_SHIM_STRICT` | off | per-claim logging / abort instead of degrading on shim errors |
+
+### Caveats & compatibility
+
+- **Semantics**: `pthread_mutex_timedlock` degrades to a blocking lock;
+  `trylock` returns `EBUSY` when the wrapper is owned but may block briefly
+  when racing (the `SoftwareMutex` interface has no native trylock);
+  cross-thread unlock returns `EPERM`. rwlocks, barriers and `pthread_spin_*`
+  pass through untouched. Statically linked targets cannot be intercepted.
+- **Unsupported locks**: anything with *type-level* `static`/`thread_local`
+  state is single-instance-only and breaks under injection (many mutexes per
+  process): `clh` (static tail — aborts), `hopscotch`/`hopscotch_nca`
+  (thread_local node parity — hangs), `mcs_local`, `hopscotch_local`,
+  `threadlocal_ticket`. The linear elevator family (`elevator`,
+  `linear_*_elevator`) currently hangs under injection (liveness assumption
+  from the fixed benchmark cohort); `tree_*_elevator` and `net_elevator` work.
+- **Memory**: every claimed mutex gets its own lock instance sized for
+  `MUTEX_SHIM_MAX_THREADS` — with `scope=all` an app with many mutexes can
+  allocate a lot (bitonic locks are O(N log² N) per instance). Lower
+  `MUTEX_SHIM_MAX_THREADS` or narrow the scope.
+- **macOS**: SIP strips `DYLD_*` from *protected* binaries — injecting works
+  for locally built / homebrew binaries, not Apple platform binaries or
+  hardened-runtime apps. Note macOS apps often use `os_unfair_lock`/GCD
+  internally, which is not interceptable; coverage is higher on Linux.
+- **Measuring**: use the app's own throughput metric (or `/usr/bin/time`)
+  and always record the shim stats; `MUTEX_SHIM_LOCK=system` gives a
+  shim-overhead baseline, running without `MUTEX_SHIM_LOCK` gives a
+  passthrough baseline.
+
+Smoke tests: `meson test -C build preload_victim_baseline preload_shim_mcs
+preload_shim_ticket preload_shim_exp_spin preload_shim_system
+preload_shim_scope_app` (`tests/preload/` — a pure-POSIX victim app
+exercising static/dynamic/recursive mutexes, trylock, condvar queue +
+ping-pong + gate, thread churn beyond the id pool, and destroy paths).
