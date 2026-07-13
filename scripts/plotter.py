@@ -8,7 +8,7 @@ QUICK CUSTOMIZATION GUIDE
 • GROUP_PALETTES assigns a color family to each topology (Bitonic, Periodic,
   Tree Elevator …).  Colors within a group are shades of the same hue.
 • AUTO_FACET_THRESHOLD: when series count exceeds this, the plot is
-  automatically split into grouped subplots.  Override with --faceted / --combined.
+  automatically split into grouped subplots. Override with --plot faceted/combined.
 """
 
 import pandas as pd   # pyright: ignore[reportMissingModuleSource]
@@ -164,22 +164,38 @@ def get_mutex_style(mutex_name):
 def get_savefig_filepath():
     from os.path import isfile
     from datetime import datetime
+
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
-    ext = "iter" if Constants.iter else "cdf"
-    if Constants.hardware_cxl:
-        ext += "_hcxl"
-    elif Constants.software_cxl:
-        ext += "_scxl"
-    else:
-        ext += "_local"
-    triplet = f"{Constants.bench_n_threads}_{Constants.bench_n_seconds}_{Constants.n_program_iterations}"
+    capture = getattr(Constants, "capture", "latency")
+    bench = Constants.bench
+    alloc = (
+        "cxl-hw" if Constants.hardware_cxl
+        else "cxl-sw" if Constants.software_cxl
+        else "malloc"
+    )
+
+    sweep_part = ""
+    if Constants.iter:
+        var = Constants.iter_variable_name
+        r = Constants.iter_range        # [start, stop+1, step]
+        sweep_part = f"-sweep-{var}-{r[0]}to{r[1]-1}s{r[2]}"
+
+    run_part = (
+        f"t{Constants.bench_n_threads}"
+        f"-s{Constants.bench_n_seconds}"
+        f"-r{Constants.n_program_iterations}"
+    )
+
     figs_dir = os.path.join(Constants.data_folder, "..", "figs")
     os.makedirs(figs_dir, exist_ok=True)
-    base = f"{figs_dir}/{ts}_{triplet}-{ext}"
-    n = 0
-    while isfile(f"{base}{n}.png"):
+    base = f"{figs_dir}/{ts}-{bench}-{capture}{sweep_part}-{run_part}-{alloc}"
+
+    path = f"{base}.png"
+    n = 1
+    while isfile(path):
+        path = f"{base}-{n}.png"
         n += 1
-    return f"{base}{n}.png"
+    return path
 
 
 # ════════════════════════════════════════════════════════════════
@@ -717,4 +733,3 @@ def print_speedup_table(data):
         rows.append(row)
     pd.DataFrame(rows).to_csv(csv_path, index=False)
     logger.info(f"Saved speedup CSV  → {csv_path}")
-

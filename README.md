@@ -15,37 +15,122 @@ pip install matplotlib pandas
 
 ## Experiment Running
 
-Series of commands to run experiments
+The CLI is organised into four domain groups. Every group has a primary enum
+selector; domain-specific flags only apply within their context.
 
-This command runs each iteration for 5 seconds with an expected total of 8 threads 3 times (8 5 3)
-It iterates with increasing threads starting at thread 1 up to 8 with an interval of 1 thread (--iter-threads 1 8 1)
-with the max benchmark (-bench max) with the software_cxl lock (-s software_cxl) set defined in constants file.
+| Group | Primary selector | Controls |
+|---|---|---|
+| **run** | `--bench {max,min,grouped}` | which C++ binary executes |
+| **capture** | `--capture {latency,throughput,rusage}` | what is measured |
+| **graph** | `--plot {auto,faceted,combined,none}` | how results are shown |
+| **selection** | `-s/-i/-x`, `--alloc` | which locks, which allocator |
 
-```python
-python3 -m scripts.main 8 5 3 --iter-threads 1 8 1 --bench max -s software_cxl  
+Use `--sweep VAR START STOP STEP` to iterate a variable (`threads`,
+`critical-delay`, `noncritical-delay`) over an inclusive range.
+
+---
+
+### Quick-start examples
+
+**Throughput sweep over thread counts (the most common run):**
+```bash
+python3 -m scripts.main 8 5 3 \
+  --bench max \
+  --capture throughput \
+  --sweep threads 1 8 1 \
+  -s champions
 ```
 
-
-This command runs with the max benchmark (-bench max) with the software_cxl lock (-s hardware_cxl) set defined in constants file.
-
-```python
-python3 -m scripts.main 8 5 3 --iter-threads 1 8 1 --bench max -s hardware_cxl  
+**Same sweep, software-CXL allocator, faceted plot:**
+```bash
+python3 -m scripts.main 8 5 3 \
+  --bench max \
+  --capture throughput \
+  --sweep threads 1 8 1 \
+  --plot faceted \
+  -s software_cxl \
+  --alloc cxl-software
 ```
 
-To graph both sets of experiments together with replacing the underlying data files
-```python
-python3 -m scripts.main 8 5 3 --iter-threads 1 8 1 --bench max -s combined_cxl --skip-experiment  
+**Hardware-CXL allocator:**
+```bash
+python3 -m scripts.main 8 5 3 \
+  --bench max \
+  --capture throughput \
+  --sweep threads 1 8 1 \
+  -s hardware_cxl \
+  --alloc cxl-hardware
 ```
 
-If the -hcxl flag is added to the run command, the allocation function will be changed from malloc to mmap, mbind to nodemask = 1UL. This can be modified in the lib/utils/cxl_utils.cpp file.
-```python
-python3 -m scripts.main 8 5 3 --iter-threads 1 8 1 --bench max -s software_cxl  -hcxl
+**Re-plot from existing CSVs (no re-run):**
+```bash
+python3 -m scripts.main 8 5 3 \
+  --bench max \
+  --capture throughput \
+  --sweep threads 1 8 1 \
+  --plot faceted \
+  -s combined_cxl \
+  --reuse-data
 ```
 
-You can select different the min benchmark as following: 
-```python
-python3 -m scripts.main 8 5 3 --iter-threads 1 8 1 --bench min -s software_cxl  
+**Min benchmark sweep:**
+```bash
+python3 -m scripts.main 8 5 3 \
+  --bench min \
+  --capture throughput \
+  --sweep threads 1 8 1 \
+  -s software_cxl
 ```
+
+**Lock-level latency CDF (no sweep):**
+```bash
+python3 -m scripts.main 4 1 5 \
+  --bench max \
+  --capture latency \
+  -s champions
+```
+
+**Speedup table + variability plot:**
+```bash
+python3 -m scripts.main 8 5 3 \
+  --bench max \
+  --capture throughput \
+  --sweep threads 1 8 1 \
+  -s champions \
+  --speedup exp_spin \
+  --variability
+```
+
+**Sweep critical-section delay (single thread count):**
+```bash
+python3 -m scripts.main 8 1 5 \
+  --bench max \
+  --capture throughput \
+  --sweep critical-delay 0 500 50
+```
+
+---
+
+### Migration guide — old flag → new flag
+
+| Old CLI flag | New CLI equivalent | Notes |
+|---|---|---|
+| `--iter-threads S E N` | `--sweep threads S E N --capture throughput` | sweep VAR is positional first arg |
+| `--iter-critical-delay S E N` | `--sweep critical-delay S E N --capture throughput` | |
+| `--iter-noncritical-delay S E N` | `--sweep noncritical-delay S E N --capture throughput` | |
+| `--thread-level` | `--capture throughput` | |
+| `--lock-level` | `--capture latency` (default) | |
+| `-r` / `--rusage` | `--capture rusage` | |
+| `--faceted` | `--plot faceted` | |
+| `--combined` | `--plot combined` | |
+| `--skip-plotting` | `--plot none` | |
+| `--skip-experiment` | `--reuse-data` | |
+| `--scxl` | `--alloc cxl-software` | |
+| `--hcxl` | `--alloc cxl-hardware` | |
+| `--low-contention --stagger-ms N` | `--stagger-ms N` | implies staggered start |
+| `-a` / `--all` | (removed; default is champions set) | |
+| `--info/--warning/--error/--critical` | `-l INFO/WARNING/ERROR/CRITICAL` | |
+
 ## Performance Measurement (single-lock, no Python pipeline)
 
 The benchmark binary can be driven directly for quick throughput and

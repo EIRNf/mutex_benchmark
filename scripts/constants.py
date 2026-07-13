@@ -359,3 +359,5 @@ class Constants:
     variability: bool = False
     speedup: bool = False
     speedup_ref: str = 'exp_spin'
+    capture: str = "latency"
+    plot: str = "auto"

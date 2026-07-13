@@ -5,16 +5,26 @@ from .logger    import logger
 import subprocess
 import os
 
-def get_data_file_name(mutex_name, i, **kwargs):
-    name_root = f"{Constants.data_folder}/{mutex_name}-{i}-{Constants.bench}"
+def get_data_file_name(mutex_name, i, **iter_kwargs):
+    """Return the CSV path for one benchmark point.
+
+    iter_kwargs should contain only the swept variable (e.g. threads=4) —
+    not the rusage flag; that is encoded in the capture segment instead.
+    """
+    capture = getattr(Constants, "capture", "latency")
+    alloc_tag = ""
     if Constants.hardware_cxl:
-        name_root += "-hcxl"
-    if Constants.software_cxl:
-        name_root += "-sxcl"
-    for name, value in kwargs.items():
-        name_root += f"-{name}={value}"
-    name = name_root + ".csv"
-    return name
+        alloc_tag = "-cxl-hw"
+    elif Constants.software_cxl:
+        alloc_tag = "-cxl-sw"
+
+    name_root = (
+        f"{Constants.data_folder}/"
+        f"{mutex_name}-{Constants.bench}-{capture}{alloc_tag}-rep{i}"
+    )
+    for key, value in iter_kwargs.items():
+        name_root += f"-{key}={value}"
+    return name_root + ".csv"
 
 def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, critical_delay=None, noncritical_delay=None, rusage=False):
     if threads is None:
@@ -62,15 +72,39 @@ def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, criti
     return cmd
 
 
-def _run_command_to_csv(command):
-    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def _run_command_to_csv(command, timeout_s: float):
+    """Run *command* and return its stdout bytes.
+
+    Raises RuntimeError on non-zero exit.
+    Raises subprocess.TimeoutExpired if the process exceeds *timeout_s*.
+    subprocess.run() kills the child process before raising, so no cleanup needed.
+    """
+    try:
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        raise
     if result.returncode != 0:
         stderr = result.stderr.decode("utf-8", errors="replace")
         raise RuntimeError(f"Benchmark command failed: {command}\n{stderr}")
     return result.stdout
 
 
+def _bench_timeout() -> float:
+    """Return a generous per-run timeout in seconds.
+
+    The benchmark is expected to finish in bench_n_seconds; we allow
+    10× that plus a 15-second fixed overhead (for startup / teardown).
+    """
+    return max(30.0, Constants.bench_n_seconds * 10 + 15)
+
+
 def run_experiment_lock_level_single_threaded():
+    timeout = _bench_timeout()
     for i in range(Constants.n_program_iterations):
         for mutex_name in Constants.mutex_names:
             logger.info(f"{mutex_name=} | {i=}")
@@ -78,21 +112,40 @@ def run_experiment_lock_level_single_threaded():
             if os.path.exists(data_file_name):
                 os.remove(data_file_name)
             command = get_command(mutex_name, csv=True, thread_level=False)
-            csv_data = _run_command_to_csv(command)
+            try:
+                csv_data = _run_command_to_csv(command, timeout)
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    f"HANG: {mutex_name} timed out after {timeout:.0f}s "
+                    f"(rep={i}) — skipping this point"
+                )
+                continue
             with open(data_file_name, "wb") as data_file:
                 data_file.write(csv_data)
 
 
 def run_experiment_iter_single_threaded():
+    timeout = _bench_timeout()
     for i in range(Constants.n_program_iterations):
         for iter_variable_value in range(*Constants.iter_range):
-            extra_command_args = {Constants.iter_variable_name: iter_variable_value, "rusage":Constants.rusage}
+            # iter_kwargs names the sweep variable only (used for file names).
+            # cmd_kwargs additionally includes rusage for the C++ argv.
+            iter_kwargs = {Constants.iter_variable_name: iter_variable_value}
+            cmd_kwargs  = {**iter_kwargs, "rusage": Constants.rusage}
             for mutex_name in Constants.mutex_names:
-                logger.info(f"{mutex_name=:<24} | {i=:0>2} | {extra_command_args=}")
-                data_file_name = get_data_file_name(mutex_name, i, **extra_command_args)
+                logger.info(f"{mutex_name=:<24} | {i=:0>2} | {cmd_kwargs=}")
+                data_file_name = get_data_file_name(mutex_name, i, **iter_kwargs)
                 if os.path.exists(data_file_name):
                     os.remove(data_file_name)
-                command = get_command(mutex_name, csv=True, thread_level=Constants.thread_level, **extra_command_args)
-                csv_data = _run_command_to_csv(command)
+                command = get_command(mutex_name, csv=True, thread_level=Constants.thread_level, **cmd_kwargs)
+                try:
+                    csv_data = _run_command_to_csv(command, timeout)
+                except subprocess.TimeoutExpired:
+                    logger.warning(
+                        f"HANG: {mutex_name} timed out after {timeout:.0f}s "
+                        f"({Constants.iter_variable_name}={iter_variable_value}, rep={i}) "
+                        f"— skipping this point"
+                    )
+                    continue
                 with open(data_file_name, "wb") as data_file:
                     data_file.write(csv_data)

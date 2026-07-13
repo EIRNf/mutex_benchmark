@@ -38,14 +38,16 @@ def main():
         build()
     init_logger()
 
-    if Constants.iter:
-        run_experiment_iter()
-    elif Constants.bench == 'min' or Constants.bench == 'max':
+    if Constants.capture == "latency" and Constants.iter:
+        # Capture-only mode: run sweep and write CSVs without plotting.
+        if not Constants.skip_experiment:
+            run_experiment_iter_single_threaded()
+    elif Constants.capture == "latency":
         run_experiment_lock_level()
-    elif Constants.bench == 'grouped':
+    elif Constants.capture in ("throughput", "rusage"):
         run_experiment_iter()
     else:
-        raise NotImplementedError(f"Benchmark '{Constants.bench}' not recognized")
+        raise NotImplementedError(f"Capture mode '{Constants.capture}' not recognized")
 
 
 if __name__ == "__main__":

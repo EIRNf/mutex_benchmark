@@ -720,13 +720,46 @@ rest. MCS at 4-8T remains the best strict-FIFO lock, and now no longer
 falls off a cliff beyond that.
 
 **Pre-existing defects found while validating the port (NOT regressions —
-reproduced with the unpatched code):**
-1. `mcs_malloc` **violates mutual exclusion** (breach detector fires 5/5 at
-   4T and 8T). Its `name()` also mislabels it as "mcs". Needs the same
-   class of race-hunt applied to seq_* earlier.
-2. `ring_ticket` fails intermittently (~1 in 5 runs at 4-8T).
-3. `cohortMCS` **hangs at 12T+** (oversubscription deadlock/livelock;
-   passes at 4-8T). Suspect the cohort-threshold handoff when all threads
-   share one NUMA cohort.
-All three verified against stashed pre-port sources; tracked here as open
-bugs.
+reproduced with the unpatched code). All three FIXED 2026-07-12
+(75/75 breach-detecting runs clean at 2/4/8/12/16T post-fix):**
+1. `mcs_malloc` **violated mutual exclusion**: its unlock passed `&my_node`
+   directly as the CAS *expected* argument, and `compare_exchange` writes
+   the observed value back through that pointer on failure — a failed tail
+   CAS silently repointed `my_node` at another thread's live node, which
+   the unlocker then granted through and free()d (use-after-free + double
+   grant). Fixed with a local `expected` copy (the idiom every sibling MCS
+   variant already used); `name()` also corrected from "mcs" to
+   "mcs_malloc".
+2. `ring_ticket` was self-documented as broken ("This mutex is bad and
+   deadlocks") — its designated-waker + racy `empty`-flag design had an
+   inherent lost-wakeup. Rewritten as what its structure was reaching for:
+   a classic **Anderson array queue lock** (ticket fetch_add indexing a
+   ring of CL-padded grant slots; FIFO; per-slot local spinning; ring
+   sized ≥ n+1 so in-flight tickets never alias).
+3. `cohortMCS` **hung at 12T+**: the global queue node was `thread_local`,
+   so a cohort batch handoff passed the critical section to a sibling
+   without transferring global-queue ownership — the sibling's eventual
+   global release CAS'd on its own never-enqueued node and spun forever.
+   The batch-cap path could also double-grant (same wake signal for "you
+   have the CS" and "acquire the global lock first"). Rewritten in proper
+   Dice-Marathe-Shavit shape: the global node lives in the Cohort and its
+   ownership passes with the local lock; local grants carry a status
+   (UNLOCKED_CS vs ACQUIRE_GLOBAL), mirroring this repo's HMCS. Also
+   `num_nodes` now defaults to 2 simulated cohorts instead of
+   hardware_concurrency() — the old default gave every thread its own
+   cohort for n ≤ cores, so the cohort logic (and its bugs) never even
+   executed in normal benchmarks.
+
+### 7.11 Python Comparison Sets Reorganized (2026-07-12)
+
+`scripts/constants.py` was restructured from ad-hoc name lists (with stale
+status comments) into documented **series** building blocks (SPIN, TICKET,
+QUEUE, HIERARCHICAL, SOFTWARE_CLASSIC, ELEVATOR, NETWORK_BASE,
+NEW_DESIGN) from which the comparison sets are composed. New headline set
+**`-s champions`** (also the default lock list): every new design —
+`net_elevator`, `wf_*`, `seq_*`, `lw_*`, `skew_*`, `bo_*`, `hb_*` — against
+the measured best of each classical series (`exp_spin`, `ticket`, `mcs`,
+`hclh`, `cohortTicket`, `tree_lamport_elevator`, `linear_bl_elevator`,
+`periodic_cas`, `bitonic_bakery`). A `-s network` set covers the full
+network family against `exp_spin`/`mcs`. All 71 distinct names across all
+sets verified to resolve and run.
