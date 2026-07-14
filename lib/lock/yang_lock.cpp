@@ -1,6 +1,7 @@
 #include "lock.hpp"
 #include <stdexcept>
 #include <mutex>
+#include <cstring>
 
 class YangMutexHelper
 {
@@ -11,7 +12,12 @@ public:
 
     void init(size_t num_threads, size_t starting_thread_id)
     {
+        // Zeroed: the ack check in lock() reads a rival's slot, and a rival
+        // announced in competitors[] may not have reset its slot yet — with
+        // malloc garbage that first-round read took the skip-ack path on
+        // values that were never written.
         this->spinners = (volatile size_t *)malloc(sizeof(size_t) * num_threads);
+        memset((void *)this->spinners, 0, sizeof(size_t) * num_threads);
 
         this->competitors = (volatile int *)malloc(sizeof(volatile int) * 2);
         (competitors)[0] = -1;
@@ -56,11 +62,21 @@ public:
         Fence();
         spinners[thread_id-starting_thread_id] = 0;
         Fence();
+        // Yang–Anderson's proof assumes sequential consistency. The doorway
+        // STORES above are fenced, but the entry-protocol LOADS below must be
+        // fenced too: on arm64 plain loads reorder freely (control
+        // dependencies do not order loads), and two legal reorderings —
+        // hoisting the ack check above the tiebreaker read, and re-reading a
+        // stale tiebreaker after leaving the first wait loop — let both
+        // sides skip/miss the ack handshake and deadlock (deterministic at
+        // 5T pre-fix, flaky at 6T/12T).
         int rival = (competitors)[1 - side(thread_id)];
+        Fence();
         if (rival != -1)
         { // there is someone competing
             if (*tiebreaker == thread_id)
             { // this thread_id either set the tiebreaker after the rival, or the rival has yet to set
+                Fence();
                 if (spinners[rival-starting_thread_id] == 0)
                 {
                     spinners[rival-starting_thread_id] = 1; // tell the rival that we have updated the tiebreaker
@@ -76,6 +92,7 @@ public:
                 {
                     LockSpinWait(spins);
                 } // wait until rival either says they updated tiebreaker or they have finished crit section
+                Fence();
 
                 if (*tiebreaker == thread_id)
                 { // we were later in setting tiebreaker
@@ -87,10 +104,19 @@ public:
                 }
             }
         }
+        // Acquire side: critical-section accesses must not be reordered
+        // above the grant observation; the lock has to provide this itself
+        // rather than relying on callers fencing inside their CS.
+        Fence();
     }
 
     void unlock(size_t thread_id)
     {                                      // unlike other locks, this takes a good amount of read/writes
+        // Release side: the critical section's writes must be visible before
+        // this side is seen as no longer competing / before the rival is
+        // freed — without this the lock only worked for callers that fenced
+        // inside their CS (as the benchmark does).
+        Fence();
         (competitors)[side(thread_id)]=-1; // this side is no longer competing
         Fence();
         int rival = *tiebreaker;           // find out if you have a rival

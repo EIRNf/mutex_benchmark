@@ -1,96 +1,73 @@
-// TODO: this lock heavily relies on having a lock guard structure, which is not possible under our current implementation.
-// This implementation is not as efficient as it should be; the lock() method makes more memory accesses than is strictly necessary because it 
-// doesn't store anything locally.
+// Non-cache-aligned variant of HopscotchMutex: identical epoch-based CLH
+// handoff (see hopscotch_lock.cpp for the design rationale and the
+// double-grant bug the epoch scheme fixes), but the per-thread slots are
+// packed contiguously instead of cacheline-strided, deliberately keeping the
+// false-sharing behavior this variant exists to measure.
 
-#include "../utils/cxl_utils.hpp"
-#include <string.h>
 #include "lock.hpp"
+#include "cxl_utils.hpp"
+#include <string.h>
 #include <stdexcept>
 #include <atomic>
-#include <stdio.h>
-#include <time.h>
-#include <assert.h>
 
-// TODO: explicit memory ordering.
-// NOTE: Because of the limitations of `thread_local`,
-// this class MUST be singleton. TODO: This is not yet explicitly enforced.
-
-// CLH variant that does not use malloc or a prev pointer
 class HopscotchNonCacheAlignedMutex : public virtual SoftwareMutex {
 public:
-    struct Node {
-        volatile bool successor_must_wait;
-    };
-
     void init(size_t num_threads) override {
-        assert(sizeof(Node) == 1);
-
-        // Create memory region
-        size_t nodes_size = sizeof(Node) * (num_threads * 2); // Each thread has 2 node slots, and the default node is in the last slot.
-        size_t tail_size = sizeof(std::atomic<Node*>*);
-        size_t default_node_size = sizeof(Node);
-        _cxl_region_size = tail_size + nodes_size + default_node_size;
+        size_t nodes_size = sizeof(std::atomic<uint64_t>) * num_threads;
+        size_t tail_size = sizeof(std::atomic<uint64_t>);
+        _cxl_region_size = nodes_size + tail_size;
         _cxl_region = (volatile char*)ALLOCATE(_cxl_region_size);
 
-        // Set up pointers into region
-        size_t offset = 0;
-        nodes = (Node*)&_cxl_region[offset];
-        offset += nodes_size;
-        tail = (std::atomic<Node*>*)&_cxl_region[offset];
-        offset += tail_size;
-        Node *default_node = (Node*)&_cxl_region[offset];
-
-        // Initialize
-        // The lock starts off unlocked by setting tail to a pointer
-        // to some true value so that the next successor can immediately lock.
-        // This means that predecessor is never a null pointer.
-        // memset only covers the node slots: the region is laid out
-        // [nodes][tail][default_node], so the previous length of
-        // nodes_size + default_node_size ran one byte past the nodes and
-        // zeroed the low byte of the just-assigned tail pointer.
-        memset((void*)nodes, 0, nodes_size);
-        default_node->successor_must_wait = false;
-        *tail = default_node;
-    }
-
-    inline Node *my_node(size_t thread_id) {
-        return &nodes[thread_id * 2 + which_node];
+        this->num_threads = num_threads;
+        memset((void*)_cxl_region, 0, _cxl_region_size);
+        nodes = (std::atomic<uint64_t>*)&_cxl_region[0];
+        tail = (std::atomic<uint64_t>*)&_cxl_region[nodes_size];
+        tail->store(0, std::memory_order_relaxed);
     }
 
     void lock(size_t thread_id) override {
-        Node *node = my_node(thread_id);
-        node->successor_must_wait = true;
-        Node *predecessor = tail->exchange(node, std::memory_order_relaxed);
-        while (predecessor->successor_must_wait);
+        std::atomic<uint64_t>* me = &nodes[thread_id];
+        uint64_t e = (me->load(std::memory_order_relaxed) & kEpochMask) + 1;
+        me->store(e, std::memory_order_relaxed);
+        uint64_t prev = tail->exchange(pack(thread_id, e), std::memory_order_acq_rel);
+        uint64_t pred_epoch = prev & kEpochMask;
+        if ((pred_epoch & 1) == 0) {
+            return;
+        }
+        std::atomic<uint64_t>* pred = &nodes[prev >> kSlotShift];
+        unsigned spins = 0;
+        while (pred->load(std::memory_order_acquire) == pred_epoch) {
+            LockSpinWait(spins);
+        }
     }
-    
+
     void unlock(size_t thread_id) override {
-        my_node(thread_id)->successor_must_wait = false;
-        // The Hopscotch part, flipping to the other node to avoid reusing a node slot prematurely.
-        which_node ^= 1;
+        std::atomic<uint64_t>* me = &nodes[thread_id];
+        me->store(me->load(std::memory_order_relaxed) + 1, std::memory_order_release);
     }
 
     void destroy() override {
+        if (_cxl_region != nullptr) {
+            FREE((void*)_cxl_region, _cxl_region_size);
+            _cxl_region = nullptr;
+        }
     }
 
     std::string name() override {
         return "hopscotch_noncachealigned";
     }
+
 private:
-    // static Node default_node; no pointer, just stored in _cxl_region
-    // static std::atomic<Node*> tail;
-    // static thread_local Node *node;
+    static constexpr unsigned kSlotShift = 48;
+    static constexpr uint64_t kEpochMask = ((uint64_t)1 << kSlotShift) - 1;
 
-    // TODO: if a thread leaves, will its still-used thread locals be reclaimed
-    // and break the algorithm?
-    // Would this algorithm be faster if the nodes were all contiguous in memory?
-    // alignas(2) static thread_local Node my_nodes[2];
+    static uint64_t pack(size_t slot, uint64_t epoch) {
+        return ((uint64_t)slot << kSlotShift) | epoch;
+    }
 
-    volatile char *_cxl_region;
-    size_t _cxl_region_size;
-    std::atomic<Node*>* tail;
-    Node *nodes;
-    // This can be stored locally because nothing else depends on it.
-    static thread_local bool which_node;
+    volatile char* _cxl_region = nullptr;
+    size_t _cxl_region_size = 0;
+    size_t num_threads = 0;
+    std::atomic<uint64_t>* nodes = nullptr;
+    std::atomic<uint64_t>* tail = nullptr;
 };
-thread_local bool HopscotchNonCacheAlignedMutex::which_node = 0;

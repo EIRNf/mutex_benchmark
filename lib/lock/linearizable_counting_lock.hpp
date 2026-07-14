@@ -216,12 +216,15 @@ public:
         //    local_grant; a waiter whose round was invisible to the sweep
         //    (see unlock()) could then starve forever — the observed
         //    lw_* hang at every thread count >= 2.
+        // local_grant is read with acquire (paired with try_grant()'s
+        // release store through spin_addr) so critical-section accesses
+        // cannot be reordered above the grant observation.
         unsigned spins = 0;
         for (;;) {
-            if (local_grant) return;
+            if (__atomic_load_n(&local_grant, __ATOMIC_ACQUIRE)) return;
             if (*waker_flag_ && waker_lock_.trylock(thread_id)) {
                 Fence();
-                if (local_grant) {
+                if (__atomic_load_n(&local_grant, __ATOMIC_ACQUIRE)) {
                     // Granted while acquiring the waker lock: do NOT consume
                     // the flag (that would destroy a lock token that belongs
                     // to some other, still-invisible waiter).
@@ -229,18 +232,37 @@ public:
                     return;
                 }
                 if (*waker_flag_) {
-                    // Lock is free: consume the token and self-serve.
-                    *waker_flag_ = false;
-                    Fence();
-                    // Leave a SERVED breadcrumb instead of advancing the
-                    // wire head. The old code set next_round = round + 1
-                    // here, which skipped any earlier, not-yet-registered
-                    // rounds on this wire and made those waiters permanently
-                    // invisible to unlock()'s sweep. The sweep now advances
-                    // the head past SERVED rounds itself, in order.
-                    slot->state = SLOT_SERVED;
-                    Fence();
+                    // Lock is free — but the current unlocker may STILL be
+                    // mid-grant on this very slot (it saw us WAITING before
+                    // the flag was set by an earlier unlock, or is sweeping
+                    // concurrently). Self-serving AND being granted absorbs
+                    // two lock tokens into one CS entry, permanently
+                    // destroying one — every remaining waiter then spins
+                    // with no flag and no grant (the observed lw_* hang).
+                    // Arbitrate through an atomic WAITING -> SERVED
+                    // transition; the granter's WAITING -> EMPTY CAS in
+                    // try_grant() is the other half of this arbitration.
+                    int expected = SLOT_WAITING;
+                    if (__atomic_compare_exchange_n(
+                            (volatile int*)&slot->state, &expected, SLOT_SERVED,
+                            false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+                        // We own the WAITING->SERVED transition: consume the
+                        // free token. The SERVED breadcrumb (not a head
+                        // advance) keeps earlier, not-yet-registered rounds
+                        // on this wire visible to unlock()'s sweep.
+                        *waker_flag_ = false;
+                        Fence();
+                        waker_lock_.unlock();
+                        return;
+                    }
+                    // Lost the race: unlock() already claimed our slot and
+                    // its grant is imminent (or done). Leave the flag for
+                    // the waiter it belongs to and take the granted token.
                     waker_lock_.unlock();
+                    unsigned gspins = 0;
+                    while (!__atomic_load_n(&local_grant, __ATOMIC_ACQUIRE)) {
+                        LcSpinWait(gspins);
+                    }
                     return;
                 }
                 waker_lock_.unlock();
@@ -263,49 +285,57 @@ public:
         {
             size_t r = get_wire_head(pred_wire)->next_round;
             auto* s = get_wire_slot(pred_wire, r % rounds_cap_);
-            if (s->state == SLOT_WAITING && s->round == r) {
-                grant(pred_wire, r, s);
+            if (s->state == SLOT_WAITING && s->round == r &&
+                try_grant(pred_wire, r, s)) {
                 return;
             }
         }
 
         // Prediction missed — sweep all W wires for the minimum
         // (round, wire_distance) waiter.  This handles step-property
-        // violations under concurrency.
-        size_t best_wire  = width_;
-        size_t best_round = ~(size_t)0;
-        WireSlot* best_slot = nullptr;
+        // violations under concurrency. Re-swept if a chosen waiter
+        // self-serves concurrently (try_grant loses its CAS): that waiter
+        // consumed the flag token, so another visible waiter may still need
+        // this unlock's token.
+        for (;;) {
+            size_t best_wire  = width_;
+            size_t best_round = ~(size_t)0;
+            WireSlot* best_slot = nullptr;
 
-        for (size_t w = 0; w < width_; w++) {
-            catch_up_head(w);
-            size_t r = get_wire_head(w)->next_round;
-            auto* s = get_wire_slot(w, r % rounds_cap_);
+            for (size_t w = 0; w < width_; w++) {
+                catch_up_head(w);
+                size_t r = get_wire_head(w)->next_round;
+                auto* s = get_wire_slot(w, r % rounds_cap_);
 
-            // Prefetch next wire's head
-            if (w + 1 < width_)
-                __builtin_prefetch(get_wire_head(w + 1), 0, 1);
+                // Prefetch next wire's head
+                if (w + 1 < width_)
+                    __builtin_prefetch(get_wire_head(w + 1), 0, 1);
 
-            if (s->state == SLOT_WAITING && s->round == r) {
-                // Compare (round, wire_dist) lexicographically
-                size_t wd = (w + width_ - pred_wire) % width_;
-                if (r < best_round ||
-                    (r == best_round && wd < ((best_wire + width_ - pred_wire) % width_))) {
-                    best_round = r;
-                    best_wire  = w;
-                    best_slot  = s;
+                if (s->state == SLOT_WAITING && s->round == r) {
+                    // Compare (round, wire_dist) lexicographically
+                    size_t wd = (w + width_ - pred_wire) % width_;
+                    if (r < best_round ||
+                        (r == best_round && wd < ((best_wire + width_ - pred_wire) % width_))) {
+                        best_round = r;
+                        best_wire  = w;
+                        best_slot  = s;
+                    }
                 }
             }
-        }
 
-        if (best_slot) {
-            grant(best_wire, best_round, best_slot);
-            return;
+            if (best_slot == nullptr) break;
+            if (try_grant(best_wire, best_round, best_slot)) {
+                return;
+            }
         }
 
         // No visible waiter — set waker flag. Waiters poll this flag in
         // lock(), so an invisible waiter (registered at a round above its
         // wire head) claims the free lock through the waker lock instead
-        // of being lost.
+        // of being lost. The fence must precede the store: the consumer
+        // enters its critical section on seeing the flag, so this unlock's
+        // CS writes have to be visible first.
+        Fence();
         *waker_flag_ = true;
         Fence();
     }
@@ -406,17 +436,32 @@ private:
         }
     }
 
-    // Grant the lock to the waiter registered at (w, r). The slot is
-    // released before the spin_addr write: the moment *spin_addr flips,
-    // the waiter may return and its stack frame (which spin_addr points
-    // into) dies — it must be the very last touch.
-    void grant(size_t w, size_t r, WireSlot* s) {
-        get_wire_head(w)->next_round = r + 1;
+    // Try to grant the lock to the waiter registered at (w, r). Claims the
+    // slot with an atomic WAITING -> EMPTY transition, which arbitrates
+    // against the waiter's own WAITING -> SERVED self-serve CAS in lock():
+    // exactly one of the two paths wins, so a waiter can never absorb both
+    // a grant and the waker-flag token (which destroyed a token and hung
+    // every remaining waiter). Returns false if the waiter self-served.
+    // The spin_addr write must be the very last touch: the moment it flips,
+    // the waiter may return and the stack frame spin_addr points into dies.
+    bool try_grant(size_t w, size_t r, WireSlot* s) {
+        // Acquire-load the state before reading spin_addr so the registrant's
+        // spin_addr store (published before its WAITING store) is visible.
+        if (__atomic_load_n((volatile int*)&s->state, __ATOMIC_ACQUIRE) != SLOT_WAITING) {
+            return false;
+        }
         volatile bool* addr = s->spin_addr;
-        s->state = SLOT_EMPTY;
-        Fence();
-        *addr = true;
-        Fence();
+        int expected = SLOT_WAITING;
+        if (!__atomic_compare_exchange_n(
+                (volatile int*)&s->state, &expected, SLOT_EMPTY,
+                false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+            return false; // waiter self-served via the waker flag
+        }
+        get_wire_head(w)->next_round = r + 1;
+        // Release store: publishes this unlock's CS writes (and the head
+        // advance) to the waiter's acquire poll of local_grant.
+        __atomic_store_n(addr, true, __ATOMIC_RELEASE);
+        return true;
     }
 };
 
@@ -1178,7 +1223,13 @@ public:
             size_t pred_slot = (v - 1) % num_threads_;
             uint8_t expected = phase_of(v - 1);
             unsigned spins = 0;
-            while (*get_phase_bit(pred_slot) != expected) {
+            // Acquire loads: without acquire on the spin read,
+            // critical-section loads can be satisfied speculatively before
+            // the spin-exit load and read pre-unlock data (observed as lost
+            // counter updates in lock-level mode). A per-read acquire
+            // (ldarb) is much cheaper than a trailing full fence.
+            while (__atomic_load_n((volatile uint8_t*)get_phase_bit(pred_slot),
+                                   __ATOMIC_ACQUIRE) != expected) {
                 LcSpinWait(spins);
             }
         }
@@ -1190,8 +1241,14 @@ public:
         // Successor (value v+1) will see this and proceed.
         size_t v = *get_thread_value(thread_id);
         size_t my_slot = v % num_threads_;
-        *get_phase_bit(my_slot) = phase_of(v);
-        Fence();
+        // Release store: the critical section's writes must be visible when
+        // the successor sees the bit flip. (The original code had a plain
+        // store with a fence AFTER it, which orders nothing that matters —
+        // the successor could enter on stale CS data unless the caller
+        // happened to fence inside its own CS, as the thread-level
+        // benchmark does.)
+        __atomic_store_n((volatile uint8_t*)get_phase_bit(my_slot),
+                         phase_of(v), __ATOMIC_RELEASE);
     }
 
     void destroy() override {
