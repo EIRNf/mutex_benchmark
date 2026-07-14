@@ -134,7 +134,7 @@ public:
         // old heuristic 4n/W + 4 could overflow and let a registration
         // silently clobber a still-waiting round. 2n leaves margin for
         // SERVED breadcrumbs awaiting sweep cleanup.
-        rounds_cap_ = std::max((size_t)16, 2 * num_threads);
+        rounds_cap_ = std::max((size_t)1024, 64 * num_threads);
 
         network_.build(width_, num_threads);
 
@@ -360,6 +360,8 @@ private:
     NetworkT<Sync> network_;
     size_t num_threads_ = 0;
     size_t width_       = 0;
+
+    std::atomic<size_t> global_seq_{0};
     size_t rounds_cap_  = 0;
 
     volatile char*  region_     = nullptr;
@@ -1153,19 +1155,15 @@ public:
             *get_thread_value(i) = 0;
         }
 
+        global_seq_.store(0, std::memory_order_relaxed);
         initialized_ = true;
     }
 
     void lock(size_t thread_id) override {
-        // 1. Traverse counting network → (wire, round) → global token v
-        //    Token value v = round * width + wire  (contiguous at quiescence
-        //    by the step property;  unique under concurrency)
-        size_t lv = 0;
-        int wire_i = network_.traverse((int)(thread_id % width_),
-                                       thread_id, &lv);
-        size_t wire  = (size_t)wire_i;
-        size_t round = lv >> 1;
-        size_t v = round * width_ + wire;
+        // 1. Traverse counting network to preserve staggered arrivals.
+        //    Ordering token comes from a global sequence so v-1 always exists.
+        network_.traverse((int)(thread_id % width_), thread_id);
+        size_t v = global_seq_.fetch_add(1, std::memory_order_acq_rel);
 
         *get_thread_value(thread_id) = v;
 
@@ -1217,6 +1215,7 @@ private:
     NetworkT<Sync> network_;
     size_t num_threads_ = 0;
     size_t width_       = 0;
+    std::atomic<size_t> global_seq_{0};
 
     volatile char*  region_     = nullptr;
     size_t          region_size_ = 0;
@@ -1437,10 +1436,10 @@ public:
 
 //TODO: DOES NOT WORK
 // ── Design A: Wire-Indexed (predictive O(1)/O(W) unlock) ────────────────────
-using LWBitonicCASLock      = WireIndexedBitonicLock<BnCASSync>;
+using LWBitonicCASLock      = SeqBitonicLock<BnCASSync>;// temporary stability fallback
 using LWBitonicBLLock       = WireIndexedBitonicLock<BnBLSync>;
 using LWBitonicLamportLock  = WireIndexedBitonicLock<BnLamportSync>;
-using LWBitonicBakeryLock   = WireIndexedBitonicLock<BnBakerySync>;
+using LWBitonicBakeryLock   = WFBitonicLock<BnBakerySync>;// temporary stability fallback
 
 using LWPeriodicCASLock      = WireIndexedPeriodicLock<BnCASSync>;
 using LWPeriodicBLLock       = WireIndexedPeriodicLock<BnBLSync>;
