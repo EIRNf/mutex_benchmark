@@ -62,16 +62,24 @@ public:
         Node* succ = me->next.load();
 
         if (succ == nullptr) {
-            // no known successor: try resetting tail
-            if (tail.compare_exchange_strong(me, nullptr)) {
+            // no known successor: try resetting tail.
+            // CAS with a LOCAL expected copy: compare_exchange writes the
+            // observed value back through `expected` on failure, so passing
+            // `me` directly repointed it at the current tail (another
+            // thread's node) and the wait loop below spun on that foreign
+            // node's next forever (deterministic 2-thread deadlock).
+            Node* expected = me;
+            if (tail.compare_exchange_strong(expected, nullptr)) {
                 // printf("%ld: Unlocked\n", thread_id);
                 return; // lock released, no waiters
             }
 
-            // wait for successor to show up
+            // wait for successor to show up (bounded: it is mid-enqueue,
+            // between its tail.exchange and prev->next.store)
+            unsigned spins = 0;
             do {
                 succ = me->next.load();
-                // std::this_thread::yield();
+                LockSpinWait(spins);
             } while (succ == nullptr);
         }
  

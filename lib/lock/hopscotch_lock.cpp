@@ -45,9 +45,13 @@ public:
         // The lock starts off unlocked by setting tail to a pointer
         // to some true value so that the next successor can immediately lock.
         // This means that predecessor is never a null pointer.
+        // memset only covers the node slots: the region is laid out
+        // [nodes][tail][default_node], so the previous length of
+        // nodes_size + default_node_size ran one byte past the nodes and
+        // zeroed the low byte of the just-assigned tail pointer.
+        memset((void*)nodes, 0, nodes_size);
         default_node->successor_must_wait = false;
         *tail = default_node;
-        memset((void*)nodes, 0, nodes_size + default_node_size);
     }
 
     inline Node *my_node(size_t thread_id) {

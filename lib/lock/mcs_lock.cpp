@@ -7,7 +7,6 @@
 #include <new>
 #include <string.h>
 
-// TODO: explicit memory ordering.
 // NOTE: Because of the limitations of `thread_local`,
 // this class MUST be singleton. TODO: This is not yet explicitly enforced.
 
@@ -15,7 +14,13 @@ class MCSMutex : public virtual SoftwareMutex {
 public:
     struct Node {
         std::atomic<Node*> next;
-        volatile bool locked;
+        // The handoff flag must carry release/acquire itself: as a plain
+        // volatile bool the predecessor's critical-section writes could
+        // become visible AFTER the successor saw locked==false on weakly
+        // ordered CPUs (arm64), losing CS updates. The benchmark masked
+        // this with in-CS Fence() calls; fence-free callers (LD_PRELOAD
+        // injection, real applications) hit it within seconds.
+        std::atomic<bool> locked;
     };
 
     void init(size_t num_threads) override {
@@ -39,17 +44,20 @@ public:
 
         // Initialize thread_local node
         local_node->next = nullptr;
-        // Load old tail node of queue while also adding ourself to the queue
-        Node *old_tail = tail->exchange(local_node, std::memory_order_acquire);
+        // Load old tail node of queue while also adding ourself to the queue.
+        // acq_rel: the release half publishes our next=nullptr before the
+        // node becomes reachable through tail.
+        Node *old_tail = tail->exchange(local_node, std::memory_order_acq_rel);
         if (old_tail == nullptr) {
             // We're the only one in the queue; we successfully acquired the lock.
             return;
         }
-        // Edit the tail to add ourself in.
-        local_node->locked = true;
+        // Edit the tail to add ourself in. locked=true is ordered before the
+        // (seq_cst) next-store that makes this node visible to the unlocker.
+        local_node->locked.store(true, std::memory_order_relaxed);
         old_tail->next = local_node;
         unsigned spins = 0;
-        while (local_node->locked) { LockSpinWait(spins); }
+        while (local_node->locked.load(std::memory_order_acquire)) { LockSpinWait(spins); }
     }
 
     void unlock(size_t thread_id) override {
@@ -67,7 +75,8 @@ public:
             LockSpinWait(spins);
         }
 
-        local_node->next.load()->locked = false;
+        // release: hands the critical section's writes to the successor.
+        local_node->next.load()->locked.store(false, std::memory_order_release);
     }
 
     void destroy() override {

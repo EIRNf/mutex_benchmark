@@ -67,15 +67,21 @@ public:
                     Fence();
                 }
 
+                // Spin-then-yield (LockSpinWait) rather than raw spinning:
+                // with more runnable threads than cores a raw spinner burns
+                // the cycles its rival needs to reach its own store, stalling
+                // whole runs (observed multi-second hangs at 12T on 8 cores).
+                unsigned spins = 0;
                 while (spinners[thread_id-starting_thread_id] == 0)
                 {
+                    LockSpinWait(spins);
                 } // wait until rival either says they updated tiebreaker or they have finished crit section
 
                 if (*tiebreaker == thread_id)
                 { // we were later in setting tiebreaker
                     while (spinners[thread_id-starting_thread_id] !=2)
                     {
-                        
+                        LockSpinWait(spins);
                     } // wait for rival to unlock
 
                 }

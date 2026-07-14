@@ -61,13 +61,19 @@ public:
     }
 
     void unlock(size_t thread_id) override {
+        // Cleared unconditionally, up front: the no-successor path below
+        // previously left this thread's is_waiting flag set forever once it
+        // stopped contending, so a later unlocker's scan handed the lock to
+        // a thread that wasn't waiting and every real waiter deadlocked
+        // (exposed by the grouped bench's staggered groups and by preload
+        // injection; masked in max_contention by instant re-acquisition).
+        thread_n_is_waiting[thread_id] = false;
+        Fence();
         // Cycle around the thread list to find the next successor
         // Start at 1 because we don't loop back to ourself.
         for (size_t offset = 1; offset < num_threads; offset++) {
             size_t next_successor_index = (thread_id + offset) % num_threads;
             if (thread_n_is_waiting[next_successor_index]) {
-                thread_n_is_waiting[thread_id] = false;
-                Fence();
                 *get_thread_n_given_lock(next_successor_index) = true;
                 Fence();
                 return; // Successfully passed off to successor

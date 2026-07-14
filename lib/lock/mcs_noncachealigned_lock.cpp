@@ -5,7 +5,6 @@
 #include <stdio.h>
 #include <string.h>
 
-// TODO: explicit memory ordering.
 // NOTE: Because of the limitations of `thread_local`,
 // this class MUST be singleton. TODO: This is not yet explicitly enforced.
 
@@ -13,7 +12,10 @@ class MCSNonCacheAlignedMutex : public virtual SoftwareMutex {
 public:
     struct Node {
         std::atomic<Node*> next;
-        volatile bool locked;
+        // atomic with release/acquire handoff — see the matching comment in
+        // mcs_lock.cpp: as a plain volatile bool, CS writes could trail the
+        // handoff on arm64 unless the caller fenced inside the CS.
+        std::atomic<bool> locked;
     };
 
     void init(size_t num_threads) override {
@@ -31,17 +33,18 @@ public:
 
         // Initialize thread_local node
         local_node->next = nullptr;
-        // Load old tail node of queue while also adding ourself to the queue
-        Node *old_tail = tail->exchange(local_node, std::memory_order_acquire);
+        // acq_rel: the release half publishes our next=nullptr before the
+        // node becomes reachable through tail.
+        Node *old_tail = tail->exchange(local_node, std::memory_order_acq_rel);
         if (old_tail == nullptr) {
             // We're the only one in the queue; we successfully acquired the lock.
             return;
         }
         // Edit the tail to add ourself in.
-        local_node->locked = true;
+        local_node->locked.store(true, std::memory_order_relaxed);
         old_tail->next = local_node;
         unsigned spins = 0;
-        while (local_node->locked) { LockSpinWait(spins); }
+        while (local_node->locked.load(std::memory_order_acquire)) { LockSpinWait(spins); }
     }
 
     void unlock(size_t thread_id) override {
@@ -59,7 +62,8 @@ public:
             LockSpinWait(spins);
         }
 
-        local_node->next.load()->locked = false;
+        // release: hands the critical section's writes to the successor.
+        local_node->next.load()->locked.store(false, std::memory_order_release);
     }
 
     void destroy() override {

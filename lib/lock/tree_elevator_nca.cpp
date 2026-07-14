@@ -23,7 +23,12 @@ public:
         size_t val_size = sizeof(std::atomic_size_t) * (num_threads * 2 + 1);
         size_t queue_buffer_size = sizeof(size_t) * num_threads_rounded_up_to_power_of_2;
         size_t queue_size = sizeof(Queue);
-        size_t waker_lock_size = WakerLock::get_cxl_region_size(num_threads);
+        // Rounded up to 8 bytes: `val` (an atomic_size_t array) is carved out
+        // right after the waker region, and the waker's size need not be a
+        // multiple of 8 (BurnsLamportMutex packs 1 + num_threads bools) — an
+        // unpadded offset put 8-byte atomics at a misaligned address, which
+        // SIGBUSes on arm64 (and is UB everywhere).
+        size_t waker_lock_size = (WakerLock::get_cxl_region_size(num_threads) + 7) & ~(size_t)7;
         size_t flag_size = sizeof(std::atomic_bool) * (num_threads + 1);
         _cxl_region_size = val_size + queue_buffer_size + queue_size + waker_lock_size + flag_size;
         _cxl_region = (volatile char*)ALLOCATE(_cxl_region_size);
