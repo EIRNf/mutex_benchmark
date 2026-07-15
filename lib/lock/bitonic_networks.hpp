@@ -647,11 +647,13 @@ public:
 
     void build(size_t myWidth, size_t num_threads) {
         width = myWidth;
-        // Number of Block repetitions: log₂(w) blocks are required
-        // for the periodic network to satisfy the step property.
+        // Number of Block repetitions for Periodic[2k]:
+        //   log2(k) where w = 2k  =>  log2(w) - 1.
+        // The previous log2(w) staging over-applied one extra Block and
+        // occasionally violated the step property under lock-like schedules.
         size_t log_w = 0;
         { size_t tmp = width; while (tmp > 1) { log_w++; tmp >>= 1; } }
-        num_blocks = (log_w > 0) ? log_w : 1;
+        num_blocks = (log_w > 1) ? (log_w - 1) : 1;
 
         blocks = new Block<Sync>*[num_blocks];
         for (size_t i = 0; i < num_blocks; i++) {

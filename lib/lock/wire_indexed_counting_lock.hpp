@@ -57,15 +57,14 @@
 //   space:  O(W * rounds_cap * CL) — dominated by the deliberately oversized
 //           per-wire slot arrays (see rounds_cap_ comment in init()).
 //
-// KNOWN RESIDUAL (2026-07-14): ~1-3% of short 4T lock-level runs still hang.
-// Evidence so far: sync-layer agnostic (seen with lamport AND bakery
-// balancers), NOT caused by duplicate (wire, round) emission (a temporary
-// duplicate-registration detector never fired across a reproduced hang), and
-// at hang time every waiter is polling with the flag down and no grant
-// pending — i.e., one more token-leak window exists in the outer protocol.
-// Repro: loop `max_contention_bench lw_periodic_bakery 4 0.25 --csv
-// --no-output` ~30x. Until closed, two aliases stay routed to fallback
-// designs (see linearizable_counting_lock.hpp Section 5).
+// KNOWN RESIDUAL (2026-07-14): occasional timeout instability remains under
+// short stress loops for some periodic/software-sync variants. A prior
+// deterministic source (periodic Block topology) was fixed in
+// bitonic_networks.hpp, which removed the reproduced chain-hole failures, but
+// sparse timeout events still appear under aggressive timeout harnesses and
+// need dedicated instrumentation to classify (true deadlock vs scheduler
+// artifact). Until fully closed, two aliases stay routed to fallback designs
+// (see linearizable_counting_lock.hpp Section 5).
 // =============================================================================
 
 

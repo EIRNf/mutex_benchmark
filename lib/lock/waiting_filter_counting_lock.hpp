@@ -11,18 +11,22 @@
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <type_traits>
 
 // =============================================================================
 // DESIGN C — Waiting-Filter Counting Lock          (wf_bitonic_*, wf_periodic_*)
 //
-// The Herlihy-Shavit-Waarts (1996) §3 "Waiting Network", faithfully:
-// a token's value v comes from the COUNTING NETWORK's output
-// (v = per-wire round * W + wire); token v then waits for its predecessor
-// v-1 to set a phase bit at unlock, over an n-slot ring with
+// The Herlihy-Shavit-Waarts (1996) §3 "Waiting Network":
+// token v waits for predecessor v-1 to set a phase bit at unlock, over
+// an n-slot ring with
 // phase(v) = floor(v/n) mod 2 preventing ABA across ring laps. The waiting
-// filter is exactly what turns the non-linearizable network into a usable
-// total order. There is NO shared ticket counter — the lock path performs
-// no atomic RMW beyond the network's balancers.
+// filter is exactly what turns non-linearizable network order into a usable
+// total order.
+//
+// Current policy:
+//   - bitonic variants use network-derived v (no shared ticket counter)
+//   - periodic variants use dense global tickets to avoid predecessor holes
+//     observed under lock-shaped schedules.
 //
 // History: between 2026-07 (commit 1d497da) and 2026-07-14 the token was a
 // global fetch_add, introduced because network-derived tokens appeared to
@@ -112,17 +116,24 @@ public:
             *get_phase_bit(i) = PHASE_UNSET;
             *get_thread_value(i) = 0;
         }
+        global_seq_.store(0, std::memory_order_relaxed);
 
         initialized_ = true;
     }
 
     void lock(size_t thread_id) override {
-        // 1. Traverse the counting network; the token IS the network's
-        //    output value (per-wire round * W + wire). v-1 always exists:
-        //    see the header's live-window argument.
+        // Bitonic variants use network-derived tokens directly.
+        // Periodic variants keep a dense ticket to avoid predecessor holes
+        // that can strand the phase chain under lock-shaped schedules.
         size_t lv = 0;
-        int wire_i = network_.traverse((int)(thread_id % width_), thread_id, &lv);
-        size_t v = (lv >> 1) * width_ + (size_t)wire_i;
+        size_t v = 0;
+        if constexpr (std::is_same_v<NetworkT<Sync>, PeriodicNetwork<Sync>>) {
+            network_.traverse((int)(thread_id % width_), thread_id, &lv);
+            v = global_seq_.fetch_add(1, std::memory_order_acq_rel);
+        } else {
+            int wire_i = network_.traverse((int)(thread_id % width_), thread_id, &lv);
+            v = (lv >> 1) * width_ + (size_t)wire_i;
+        }
 
         *get_thread_value(thread_id) = v;
 
@@ -186,6 +197,7 @@ private:
     NetworkT<Sync> network_;
     size_t num_threads_ = 0;
     size_t width_       = 0;
+    std::atomic<size_t> global_seq_{0};
 
     volatile char*  region_     = nullptr;
     size_t          region_size_ = 0;

@@ -11,13 +11,15 @@
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <type_traits>
 
 // =============================================================================
 // DESIGN B — Sequenced Counting Lock              (seq_bitonic_*, seq_periodic_*)
 //
-// NETWORK-ORDERED (since 2026-07-14): the token is the counting network's
-// output value (per-wire round * W + wire); there is no shared ticket
-// counter. What distinguishes B within the network-ordered designs is its
+// Mixed ordering (since 2026-07-14/15):
+//   - bitonic variants: network-derived token (per-wire round * W + wire)
+//   - periodic variants: dense global ticket fallback
+// What distinguishes B within this family is its
 // service machinery: a token-versioned slot array giving the unlocker an
 // O(1) direct handoff onto the successor's own cache line, with the shared
 // now_serving_ counter as fallback.
@@ -105,6 +107,7 @@ public:
         slot_base_    = &region_[off];
 
         *now_serving_ = 0;
+        global_seq_.store(0, std::memory_order_relaxed);
 
         // NO_TOKEN sentinel: token 0 is a valid sequence number, so slots
         // must be explicitly initialized to a value no thread will ever hold.
@@ -118,14 +121,19 @@ public:
     }
 
     void lock(size_t thread_id) override {
-        // 1. Traverse the counting network; the token IS the network's
-        //    output value (per-wire round * W + wire). Since 2026-07-14
-        //    there is no shared ticket counter — ordering comes from the
-        //    network (see the header's live-window argument for why seq-1
-        //    always exists and why the slot bound below still holds).
+        // Bitonic variants use the network-derived token directly.
+        // Periodic variants retain dense ticket ordering: under stress, direct
+        // periodic tokens can expose predecessor holes that strand successor
+        // chains in B/C while F/G/D remain ticket-safe.
         size_t lv = 0;
-        int wire_i = network_.traverse((int)(thread_id % width_), thread_id, &lv);
-        size_t seq = (lv >> 1) * width_ + (size_t)wire_i;
+        size_t seq = 0;
+        if constexpr (std::is_same_v<NetworkT<Sync>, PeriodicNetwork<Sync>>) {
+            network_.traverse((int)(thread_id % width_), thread_id, &lv);
+            seq = global_seq_.fetch_add(1, std::memory_order_acq_rel);
+        } else {
+            int wire_i = network_.traverse((int)(thread_id % width_), thread_id, &lv);
+            seq = (lv >> 1) * width_ + (size_t)wire_i;
+        }
 
         // 2. Register in slot array for direct handoff.
         //    Single-writer safety: a slot is shared by tokens seq and
@@ -215,6 +223,7 @@ private:
     size_t width_       = 0;
     size_t num_slots_   = 0;
     size_t slot_mask_   = 0;
+    std::atomic<size_t> global_seq_{0};
 
 
     volatile char*  region_      = nullptr;

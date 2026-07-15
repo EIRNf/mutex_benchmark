@@ -6,6 +6,11 @@ performs against the rest of the suite on real hardware, and where the family
 carries redundancy. Source of truth for each design's protocol is its header
 comment; this file stays at the survey level.
 
+Update (late 2026-07-14): periodic timeout forensics found that fully
+network-derived ordering in Designs B/C can strand predecessor chains on
+periodic variants under lock-shaped schedules. Policy is now mixed:
+bitonic B/C remain network-derived; periodic B/C use dense ticket fallback.
+
 ## 1. File map (one design per file)
 
 | Design | File | Benchmark names |
@@ -125,10 +130,13 @@ serial section. Against that background, what is defensible here:
   they contribute a successor-signal variant (C) and a calibrated overhead
   model (D), and their headers now say exactly that.
 
-### 4b. The ticket is NOT fundamental (validated 2026-07-14)
+### 4b. Ticket necessity is topology-dependent
 
-The question "does correctness require the global ticket?" has a measured
-answer: **no.** Substituting the counting-network output value
+The question "does correctness require the global ticket?" has a measured,
+topology-dependent answer. For bitonic C: **no** (network-derived remains
+sound in stress). For periodic B/C under lock-shaped schedules: **dense
+tickets are still required in practice** to avoid predecessor-chain stalls.
+Substituting the counting-network output value
 (`v = (lv>>1)·W + wire`, the pre-1d497da derivation) back into Design C on
 top of the fixed release/acquire handoff passed every oracle (45/45
 lock-level, breach-armed T∈{2..12} including odd counts, preload
@@ -157,15 +165,17 @@ n-bounded overtaking (quiescently consistent order).
 
 ## 5. Correctness status (2026-07-14)
 
-All 24 family names pass the current sweeps (lock-level ×10, breach-armed
-thread-level, preload victim) except one residual: **Design A hangs in
-~1-3% of short 4T lock-level runs** — sync-agnostic, not balancer token
-duplication (instrumented and disproved), symptom is one lost lock token
-with all waiters polling. History for context: A's dominant
-token-destruction race (grant vs waker-flag self-serve, unarbitrated) and
-C's wrong-side release fence were found and fixed 2026-07-13/14; B carried
-the same fence pattern latently (fixed); details live in each file header
-and the git log.
+The shared Periodic-network primitive received a topology fix in
+`bitonic_networks.hpp`: `Periodic[2k]` now repeats `Block[2k]` exactly
+`log2(k) = log2(w)-1` times (not `log2(w)`). This removed the reproduced
+periodic-chain hole that could strand successor tokens.
+
+After that fix, periodic timeout forensics showed a remaining chain-stall mode
+in fully network-derived B/C periodic variants: at timeout, all threads were
+parked in predecessor waits while one predecessor value had no current owner.
+Periodic B/C therefore reverted to dense tickets; bitonic B/C remain
+network-derived. With that policy, periodic B/C timeout events disappeared in
+120-run stress loops (T8, 20s watchdog), while suite remained green.
 
 ## 6. Redundancy register
 

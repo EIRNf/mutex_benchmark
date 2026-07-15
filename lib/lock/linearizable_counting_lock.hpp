@@ -26,13 +26,15 @@
 //  ──────  ────────────────────────────────────  ─────────────────────────────
 //  A       wire_indexed_counting_lock.hpp        NETWORK (wire, round) with
 //          (lw_*)                                per-wire slot service;
-//                                                ~1-3% residual hang
-//                                                documented in-file
-//  B       sequenced_counting_lock.hpp           NETWORK output value
-//          (seq_*)                               (since 2026-07-14); slot
-//                                                direct-handoff + now_serving_
-//  C       waiting_filter_counting_lock.hpp      NETWORK output value
-//          (wf_*)                                (since 2026-07-14); faithful
+//                                                residual instability
+//                                                under short timeout
+//                                                stress is documented
+//                                                in-file
+//  B       sequenced_counting_lock.hpp           bitonic: NETWORK output value
+//          (seq_*)                               periodic: dense ticket fallback;
+//                                                slot handoff + now_serving_
+//  C       waiting_filter_counting_lock.hpp      bitonic: NETWORK output value
+//          (wf_*)                                periodic: dense ticket fallback;
 //                                                HSW §3 phase-bit waiting ring
 //  F       bounded_overtaking_counting_lock.hpp  global fetch_add ticket;
 //          (bo_*)                                K-bounded overtaking of
@@ -45,15 +47,12 @@
 //  E       (removed 2026-07-12)                  reverse-skew was behaviorally
 //                                                identical to D — see D's file
 //
-// A, B and C are network-ordered: their token IS the counting network's
-// output value, there is no shared ticket counter, and their fairness is
-// n-bounded overtaking in real-time order (quiescently consistent). F and G
-// keep the global ticket ON PURPOSE — their overtaking/re-draw semantics
-// require dense, immediately-known tokens. D keeps it because the design is
-// an overhead model whose ordering is deliberately trivial. (From 2026-07
-// commit 1d497da until 2026-07-14, B and C also ran on tickets — that era's
-// rationale and its refutation are documented in their headers and in
-// COUNTING_LOCKS.md §4b.)
+// A is fully network-ordered. B/C are mixed: bitonic is network-ordered,
+// periodic uses dense ticket fallback (periodic predecessor holes were
+// observed under lock-shaped schedules). F/G keep global tickets ON PURPOSE —
+// their overtaking/re-draw semantics require dense, immediately-known tokens.
+// D keeps tickets because it is an overhead model with deliberately trivial
+// ordering.
 //
 // The plain BitonicCountingLock/PeriodicCountingLock (bitonic_* /
 // periodic_*, in bitonic_networks.hpp) are the family's predecessors:
@@ -76,9 +75,10 @@
 // ── Design A: Wire-Indexed (network-ordered; O(1)/O(W) unlock) ──────────────
 // Two aliases are still routed to fallback designs (marked FALLBACK): they
 // were parked there while Design A hung deterministically. The dominant
-// token-destruction race is fixed (2026-07-14), but a ~1-3% residual hang
-// remains (see wire_indexed_counting_lock.hpp), so the fallbacks stay until
-// it is closed. NOTE the redundancy while they last: lw_bitonic_cas
+// token-destruction race is fixed (2026-07-14), but residual timeout
+// instability remains under stress (see wire_indexed_counting_lock.hpp), so
+// the fallbacks stay until it is closed. NOTE the redundancy while they last:
+// lw_bitonic_cas
 // duplicates seq_bitonic_cas, lw_bitonic_bakery duplicates
 // wf_bitonic_bakery — benchmarking them adds no information.
 using LWBitonicCASLock      = SeqBitonicLock<BnCASSync>;      // FALLBACK (== seq_bitonic_cas)
