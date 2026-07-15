@@ -134,8 +134,8 @@ public:
         // Traverse tree from root to lead (excluding root) to find and enqueue waiting nodes.
         // Exclude root because we're enqueueing only siblings and the root does not have a sibling.
         size_t node = leaf(thread_id);
-        for (size_t j = leaf_depth; j != -1; j--) { // doesn't have to be "signed" i think
-            size_t k = val[sibling(path_climbing(node, j))];
+        for (int j = static_cast<int>(leaf_depth); j >= 0; --j) {
+            size_t k = val[sibling(path_climbing(node, static_cast<size_t>(j)))];
             if (val[leaf(k)] < num_threads) {
                 val[leaf(k)] = num_threads;
                 enqueue(k);

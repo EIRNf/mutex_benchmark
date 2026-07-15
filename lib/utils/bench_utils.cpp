@@ -192,10 +192,10 @@ void busy_sleep(size_t iterations) {
 }
 
 
+#ifdef __linux__
 // Global variable to track mutex size for deallocation
 static size_t g_mutex_alloc_size = 0;
 
-#ifdef __linux__
 // NUMA-aware delete for mutex objects
 void numa_delete(SoftwareMutex* ptr) {
     if (ptr == nullptr) return;

@@ -24,7 +24,7 @@ public:
         }
     }
 
-    bool trylock(size_t thread_id) {
+    bool trylock(size_t thread_id) override {
         (void)thread_id;
 
         return !lock_.test_and_set(std::memory_order_acquire);

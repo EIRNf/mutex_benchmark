@@ -72,7 +72,7 @@ public:
             }
         }
     }
-    bool trylock(size_t thread_id){
+    bool trylock(size_t thread_id) override {
         volatile bool *my_b = get_b(thread_id);
         *my_b=true; //going for the lock
         *x = thread_id+1; //first confirmation

@@ -243,7 +243,7 @@ int max_contention_bench(
                     if (*last == i) {
                         // lock->unlock(i);
                         // continue;
-                        (*total_unfair)++;
+                        *total_unfair = *total_unfair + 1;
                     }
                     *last = i;
                     thread_args[i].stats.num_iterations++;
@@ -275,9 +275,9 @@ int max_contention_bench(
                     if (*last == i) {
                         // lock->unlock(i);
                         // continue;
-                        (*total_unfair)++;
+                        *total_unfair = *total_unfair + 1;
                     }
-                    (*counter)++;
+                    *counter = *counter + 1;
                     *last = i;
                     Fence();
                     busy_sleep(rand() % max_critical_delay_iterations);

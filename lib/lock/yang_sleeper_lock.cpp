@@ -63,7 +63,7 @@ public:
         int rival = (competitors)[1 - side(thread_id)];
         if (rival != -1)
         { // there is someone competing
-            if (*tiebreaker == thread_id)
+            if (*tiebreaker == static_cast<int>(thread_id))
             { // this thread_id either set the tiebreaker after the rival, or the rival has yet to set
                 if (spinners[rival-starting_thread_id] == 0)
                 {
@@ -78,7 +78,7 @@ public:
                     spinnerSleep[thread_id-starting_thread_id].acquire();
                 } // wait until rival either says they updated tiebreaker or they have finished crit section
 
-                if (*tiebreaker == thread_id)
+                if (*tiebreaker == static_cast<int>(thread_id))
                 { // we were later in setting tiebreaker
                     while (spinners[thread_id-starting_thread_id] !=2)
                     {
@@ -96,7 +96,7 @@ public:
         Fence();
         int rival = *tiebreaker;           // find out if you have a rival
 
-        if (rival != thread_id)
+        if (rival != static_cast<int>(thread_id))
         {                        // you have a competitor who is waiting
             spinners[rival-starting_thread_id] = 2; // free the competitor
             Fence();
@@ -124,7 +124,7 @@ public:
 private:
     int side(size_t thread_id)
     {
-        if (thread_id < starting_thread_id + (int)(num_threads / 2))
+        if (thread_id < starting_thread_id + (num_threads / 2))
         {
             return 0;
         }

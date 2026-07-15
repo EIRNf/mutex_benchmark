@@ -122,6 +122,9 @@ static const char *kConditionalNames[] = {
 #ifdef inc_umwait
     "umwait",
 #endif
+#if !defined(inc_futex) && !defined(inc_boost) && !defined(inc_nsync) && !defined(inc_umwait)
+    nullptr,
+#endif
 };
 
 // Runs the actual lock exercise in-process (used inside the forked child).
@@ -175,6 +178,9 @@ int main() {
         failures += exercise_one(name);
     }
     for (const char *name : kConditionalNames) {
+        if (name == nullptr) {
+            continue;
+        }
         total++;
         failures += exercise_one(name);
     }
