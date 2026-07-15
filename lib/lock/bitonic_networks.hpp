@@ -561,26 +561,34 @@ public:
         }
     }
 
-    // Traverse: input wire -> output wire
-    // Block[2k] splits input into top (A) and bottom (B) halves,
-    // routes through sub-blocks, then combines with final balancers.
-    //   xA = {x0, x1, ..., x_{k-1}}    -> sub[0]
-    //   xB = {x_k, x_{k+1}, ..., x_{2k-1}} -> sub[1]
-    //   final_layer[i] combines yA_i and yB_i -> z_{2i}, z_{2i+1}
+    // Traverse: input wire -> output wire, per AoMP (Herlihy-Shavit)
+    // Fig 12.19 Block[2k]:
+    //   sub-block A takes the EVEN-indexed inputs x0, x2, ..., x_{2k-2}
+    //   sub-block B takes the ODD-indexed  inputs x1, x3, ..., x_{2k-1}
+    //   final_layer[i] combines yA_i and yB_i -> z_{2i} (top), z_{2i+1}
+    //
+    // The previous wiring split inputs into CONTIGUOUS halves and emitted
+    // z_i / z_{i+k}. Cascading that variant (Periodic = Block ∘ Block ∘ ...)
+    // inserts stray wire permutations between stages: the result smooths
+    // uniform traffic (so tight-loop density checks pass) but is NOT a
+    // counting network — under lock-shaped schedules it occasionally
+    // violated the step property, emitting e.g. wire-2 round R while
+    // wire-1 round R never appeared. Any design that chain-waits on the
+    // missing token then deadlocks (observed: seq_periodic_cas 3/60,
+    // wf_periodic_cas 2/60 hangs pre-fix, with a captured draw-history
+    // proving value 192469 was never emitted while 192470 was).
     int traverse(int input, size_t tid, size_t* last_val = nullptr) {
         if (width == 2) {
             return final_layer[0].traverse(tid, last_val);
         }
-        int k = (int)(width / 2);
         int output;
-        if (input < k) {
-            output = sub[0]->traverse(input, tid);
+        if ((input & 1) == 0) {
+            output = sub[0]->traverse(input >> 1, tid);
         } else {
-            output = sub[1]->traverse(input - k, tid);
+            output = sub[1]->traverse(input >> 1, tid);
         }
-        int wire = final_layer[output].traverse(tid, last_val);
-        // Herlihy Fig 12.19: balancer[i] outputs to wire i (top) and wire i+k (bottom)
-        return output + wire * k;
+        int bit = final_layer[output].traverse(tid, last_val);
+        return 2 * output + bit;
     }
 
     // Returns globally unique ticket: (round * width) + output_wire.
