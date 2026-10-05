@@ -236,17 +236,13 @@ class Constants:
                 "bakery", "bakery_nonatomic", "boulangerie", "burns_lamport",
                 "dijkstra", "dijkstra_nonatomic", "spin", "exp_spin",
                 "knuth", "lamport", "mcs", "peterson", "ticket",
+                "linear_lamport_elevator", "tree_lamport_elevator",
                 "linear_cas_elevator", "linear_bl_elevator",
                 "tree_cas_elevator", "tree_bl_elevator",
             ]
             + NETWORK_BASE_SERIES
-            + [
-                "net_elevator",
-                "wf_bitonic_cas", "wf_bitonic_bl",
-                "wf_bitonic_lamport", "wf_bitonic_bakery",
-                "skew_bitonic_cas",
-                "bo_bitonic_cas", "hb_bitonic_cas",
-            ]
+            + NEW_DESIGN_SERIES
+            
         )
 
         # RMW-free locks only (pure loads/stores/fences).
