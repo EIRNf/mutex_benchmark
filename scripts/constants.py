@@ -298,6 +298,9 @@ class Constants:
             "max": "./build/apps/max_contention_bench/max_contention_bench",
             "grouped": "./build/apps/grouped_contention_bench/grouped_contention_bench",
             "min": "./build/apps/min_contention_bench/min_contention_bench",
+            "tigon": "./build/apps/tigon_db_bench/bench_ycsb",
+            "tigon_ycsb": "./build/apps/tigon_db_bench/bench_ycsb",
+            "tigon_tpcc": "./build/apps/tigon_db_bench/bench_tpcc",
         }
         BENCH_N_THREADS = 10
         BENCH_N_SECONDS = 1

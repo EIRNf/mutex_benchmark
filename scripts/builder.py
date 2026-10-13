@@ -46,3 +46,9 @@ def build():
 
     _run_checked(configure_command, "Meson configuration failed.")
     _run_checked("meson compile -C build".split(), "Meson compilation failed.")
+
+    if Constants.bench.startswith("tigon"):
+        logger.info("Building Tigon benchmark suite...")
+        tigon_build_script = "./apps/tigon_db_bench/build.sh"
+        if os.path.exists(tigon_build_script):
+            _run_checked([tigon_build_script, "./build/apps/tigon_db_bench"], "Tigon build failed.")

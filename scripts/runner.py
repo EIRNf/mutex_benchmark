@@ -4,6 +4,7 @@ from .constants import Constants
 from .logger    import logger
 import subprocess
 import os
+import re
 
 def get_data_file_name(mutex_name, i, **iter_kwargs):
     """Return the CSV path for one benchmark point.
@@ -33,6 +34,39 @@ def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, criti
         critical_delay = Constants.critical_delay
     if noncritical_delay is None:
         noncritical_delay = Constants.noncritical_delay
+
+    if Constants.bench.startswith("tigon"):
+        run_sec = max(1, int(Constants.bench_n_seconds))
+        # Use with_lock.sh to inject the mutex via LD_PRELOAD
+        cmd = [
+            "./scripts/with_lock.sh",
+            "-n", str(max(128, threads * 4)),
+            mutex_name,
+            Constants.executable,
+            "--logtostderr=1",
+            "--id=0",
+            "--servers=127.0.0.1:1234",
+            f"--threads={threads}",
+            f"--partition_num={threads}",
+            f"--time_to_run={run_sec}",
+            "--time_to_warmup=1",
+            "--protocol=TwoPL",
+        ]
+        if "tpcc" in Constants.bench:
+            cmd.extend([
+                "--query=mixed",
+                "--neworder_dist=10",
+                "--payment_dist=15",
+            ])
+        else:
+            cmd.extend([
+                "--query=rmw",
+                "--read_write_ratio=80",
+                "--keys=200000",
+            ])
+        logger.debug(f"Bench command: {cmd}")
+        return cmd
+
     cmd = [
         Constants.executable, 
         mutex_name, 
@@ -72,7 +106,33 @@ def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, criti
     return cmd
 
 
-def _run_command_to_csv(command, timeout_s: float):
+def _parse_tigon_output_to_csv(stdout_bytes, stderr_bytes, threads: int, seconds: float) -> bytes:
+    """Parse Tigon's commit counts and format as CSV rows matching other benchmarks."""
+    out = stdout_bytes.decode("utf-8", errors="replace")
+    err = stderr_bytes.decode("utf-8", errors="replace")
+    combined = out + "\n" + err
+
+    total_commit = 0
+    match = re.search(r"total_commit:\s*(\d+)", combined)
+    if match:
+        total_commit = int(match.group(1))
+    else:
+        avg_match = re.search(r"average commit:\s*([\d.]+)", combined)
+        if avg_match:
+            total_commit = int(float(avg_match.group(1)) * seconds)
+        else:
+            logger.warning("Could not parse total_commit or average commit from Tigon output")
+
+    lines = []
+    per_thread = total_commit // threads if threads > 0 else 0
+    rem = total_commit % threads if threads > 0 else 0
+    for t in range(threads):
+        cnt = per_thread + (1 if t < rem else 0)
+        lines.append(f"{t},{seconds:.6f},{cnt}\n")
+    return "".join(lines).encode("utf-8")
+
+
+def _run_command_to_csv(command, timeout_s: float, threads: int = 1, seconds: float = 1.0):
     """Run *command* and return its stdout bytes.
 
     Raises RuntimeError on non-zero exit.
@@ -91,6 +151,9 @@ def _run_command_to_csv(command, timeout_s: float):
     if result.returncode != 0:
         stderr = result.stderr.decode("utf-8", errors="replace")
         raise RuntimeError(f"Benchmark command failed: {command}\n{stderr}")
+
+    if Constants.bench.startswith("tigon"):
+        return _parse_tigon_output_to_csv(result.stdout, result.stderr, threads, seconds)
     return result.stdout
 
 
@@ -113,7 +176,11 @@ def run_experiment_lock_level_single_threaded():
                 os.remove(data_file_name)
             command = get_command(mutex_name, csv=True, thread_level=False)
             try:
-                csv_data = _run_command_to_csv(command, timeout)
+                csv_data = _run_command_to_csv(
+                    command, timeout,
+                    threads=Constants.bench_n_threads,
+                    seconds=Constants.bench_n_seconds,
+                )
             except subprocess.TimeoutExpired:
                 logger.warning(
                     f"HANG: {mutex_name} timed out after {timeout:.0f}s "
@@ -132,6 +199,7 @@ def run_experiment_iter_single_threaded():
             # cmd_kwargs additionally includes rusage for the C++ argv.
             iter_kwargs = {Constants.iter_variable_name: iter_variable_value}
             cmd_kwargs  = {**iter_kwargs, "rusage": Constants.rusage}
+            threads = iter_variable_value if Constants.iter_variable_name == "threads" else Constants.bench_n_threads
             for mutex_name in Constants.mutex_names:
                 logger.info(f"{mutex_name=:<24} | {i=:0>2} | {cmd_kwargs=}")
                 data_file_name = get_data_file_name(mutex_name, i, **iter_kwargs)
@@ -139,7 +207,11 @@ def run_experiment_iter_single_threaded():
                     os.remove(data_file_name)
                 command = get_command(mutex_name, csv=True, thread_level=Constants.thread_level, **cmd_kwargs)
                 try:
-                    csv_data = _run_command_to_csv(command, timeout)
+                    csv_data = _run_command_to_csv(
+                        command, timeout,
+                        threads=threads,
+                        seconds=Constants.bench_n_seconds,
+                    )
                 except subprocess.TimeoutExpired:
                     logger.warning(
                         f"HANG: {mutex_name} timed out after {timeout:.0f}s "

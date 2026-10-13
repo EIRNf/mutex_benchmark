@@ -90,8 +90,11 @@ def _validate_context(args, parser):
     if args.capture in ("throughput", "rusage") and args.sweep is None:
         parser.error("--capture throughput/rusage requires --sweep")
 
-    if args.capture == "rusage" and args.bench == "min":
-        parser.error("--capture rusage is not supported by --bench min")
+    if args.capture == "rusage" and (args.bench == "min" or args.bench.startswith("tigon")):
+        parser.error(f"--capture rusage is not supported by --bench {args.bench}")
+
+    if args.bench.startswith("tigon") and args.capture != "throughput":
+        parser.error(f"--bench {args.bench} currently supports --capture throughput")
 
     if args.capture == "latency":
         if args.variability:
@@ -163,7 +166,7 @@ def init_args():
     run_group = parser.add_argument_group("run options (what executes)")
     run_group.add_argument(
         "--bench",
-        choices=("max", "min", "grouped"),
+        choices=("max", "min", "grouped", "tigon", "tigon_ycsb", "tigon_tpcc"),
         default="max",
         help="benchmark executable to run",
     )

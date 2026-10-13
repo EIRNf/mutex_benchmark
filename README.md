@@ -20,7 +20,7 @@ selector; domain-specific flags only apply within their context.
 
 | Group | Primary selector | Controls |
 |---|---|---|
-| **run** | `--bench {max,min,grouped}` | which C++ binary executes |
+| **run** | `--bench {max,min,grouped,tigon,tigon_ycsb,tigon_tpcc}` | which binary/application executes |
 | **capture** | `--capture {latency,throughput,rusage}` | what is measured |
 | **graph** | `--plot {auto,faceted,combined,none}` | how results are shown |
 | **selection** | `-s/-i/-x`, `--alloc` | which locks, which allocator |
@@ -80,6 +80,27 @@ python3 -m scripts.main 8 5 3 \
   --capture throughput \
   --sweep threads 1 8 1 \
   -s software_cxl
+```
+
+**Tigon setup (Linux x86_64 only).** Tigon is a git submodule at `apps/tigon_db_bench/tigon` (pinned commit). Quick start on a fresh Linux machine:
+```bash
+git clone --recurse-submodules -b tigon-benchmark-submodule <repo-url> && cd mutex_benchmark
+# (or, in an existing clone: git submodule update --init)
+sudo apt install build-essential cmake meson ninja-build clang python3 \
+  libjemalloc-dev libgoogle-glog-dev libgflags-dev
+meson setup build && meson compile -C build mutex_preload
+./apps/tigon_db_bench/build.sh      # inits submodule, applies patches, builds bench_ycsb/bench_tpcc
+```
+Our changes to Tigon (spinlock-to-`pthread_mutex_t` redirection, `cxlalloc` mmap backend) are kept out of the submodule as
+`apps/tigon_db_bench/patches/*.patch`; `build.sh` applies them idempotently. The build is refused on non-Linux hosts.
+
+**Tigon database benchmark sweep (injected locks via LD_PRELOAD):**
+```bash
+python3 -m scripts.main 8 5 3 \
+  --bench tigon_ycsb \
+  --capture throughput \
+  --sweep threads 1 8 1 \
+  -s champions
 ```
 
 **Lock-level latency CDF (no sweep):**

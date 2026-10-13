@@ -1,0 +1,3 @@
+[submodule "apps/tigon_db_bench/tigon"]
+	path = apps/tigon_db_bench/tigon
+	url = https://github.com/ut-datasys/tigon.git
