@@ -92,7 +92,9 @@ meson setup build && meson compile -C build mutex_preload
 ./apps/tigon_db_bench/build.sh      # inits submodule, applies patches, builds bench_ycsb/bench_tpcc
 ```
 Our changes to Tigon (spinlock-to-`pthread_mutex_t` redirection, `cxlalloc` mmap backend) are kept out of the submodule as
-`apps/tigon_db_bench/patches/*.patch`; `build.sh` applies them idempotently. The build is refused on non-Linux hosts.
+`apps/tigon_db_bench/patches/*.patch`; `build.sh` applies them idempotently. The patch also selects standalone CXL
+transport and skips the network round-trip probe. The build is refused on non-Linux hosts. Tigon runs use `app` shim
+scope automatically so allocator and logging-library mutexes remain untouched.
 
 **Tigon database benchmark sweep (injected locks via LD_PRELOAD):**
 ```bash

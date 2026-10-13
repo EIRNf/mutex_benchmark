@@ -1152,7 +1152,7 @@ int pthread_cond_destroy(pthread_cond_t* c) SHIM_NOTHROW {
 void* mmap(void* a, size_t l, int p, int f, int fd, off_t o) SHIM_NOTHROW {
     return hook_mmap(a, l, p, f, fd, o);
 }
-#if defined(__GLIBC__)
+#if defined(__GLIBC__) && !defined(_FILE_OFFSET_BITS)
 // Apps built with _FILE_OFFSET_BITS=64 bind to the distinct mmap64 symbol;
 // without this hook their shared-memory regions would escape region scope.
 void* mmap64(void* a, size_t l, int p, int f, int fd, off64_t o) SHIM_NOTHROW {

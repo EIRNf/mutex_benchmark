@@ -57,7 +57,10 @@ shim=$(cd "$(dirname "$shim")" && pwd)/$(basename "$shim")
 
 MUTEX_SHIM_LOCK=$lock;                                 export MUTEX_SHIM_LOCK
 [ -n "$maxt" ]      && { MUTEX_SHIM_MAX_THREADS=$maxt; export MUTEX_SHIM_MAX_THREADS; }
-[ -n "$scope" ]     && { MUTEX_SHIM_SCOPE=$scope;      export MUTEX_SHIM_SCOPE; }
+[ -n "$scope" ] || case "$1" in
+    */apps/tigon_db_bench/*) scope=app ;;
+esac
+[ -n "$scope" ]      && { MUTEX_SHIM_SCOPE=$scope;      export MUTEX_SHIM_SCOPE; }
 [ -n "$stats" ]     && { MUTEX_SHIM_STATS=1;           export MUTEX_SHIM_STATS; }
 [ -n "$statsfile" ] && { MUTEX_SHIM_STATS_FILE=$statsfile; export MUTEX_SHIM_STATS_FILE; }
 [ -n "$log" ]       && { MUTEX_SHIM_LOG=1;             export MUTEX_SHIM_LOG; }

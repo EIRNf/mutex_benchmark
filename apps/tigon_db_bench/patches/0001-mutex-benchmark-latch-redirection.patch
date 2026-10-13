@@ -39,7 +39,7 @@ index 17ecf9e..88460d5 100644
  # include path
  include_directories(
 diff --git a/common/CXLMemory.h b/common/CXLMemory.h
-index 4d6a92a..863ca02 100644
+index 4d6a92a..a23216c 100644
 --- a/common/CXLMemory.h
 +++ b/common/CXLMemory.h
 @@ -52,9 +52,11 @@ class CXLMemory {
@@ -52,7 +52,7 @@ index 4d6a92a..863ca02 100644
 +                cxlalloc_init_backend(backend);
                  cxlalloc_init("SS", default_cxl_mem_size, thread_id + threads_num_per_host * host_id, threads_num_per_host * hosts_num, host_id, hosts_num);
 -                LOG(INFO) << "cxlalloc initialized for thread " << thread_id 
-+                LOG(INFO) << "cxlalloc initialized with backend " << backend << " for thread " << thread_id 
++                LOG(INFO) << "cxlalloc initialized with backend " << backend << " for thread " << thread_id
                          << " (global ID = " << thread_id + threads_num_per_host * host_id 
                          << ") on host " << host_id;
          }
@@ -106,6 +106,33 @@ index ef356db..eccd7f6 100644
 +#endif
  };
  } // namespace star
+diff --git a/core/Coordinator.h b/core/Coordinator.h
+index 76e9c07..d16fb4d 100644
+--- a/core/Coordinator.h
++++ b/core/Coordinator.h
+@@ -123,6 +123,9 @@ class Coordinator {
+ 
+ 	void measure_round_trip()
+ 	{
++		if (context.use_cxl_transport)
++			return;
++
+ 		auto init_message = [](Message *message, std::size_t coordinator_id, std::size_t dest_node_id) {
+ 			message->set_source_node_id(coordinator_id);
+ 			message->set_dest_node_id(dest_node_id);
+diff --git a/core/Macros.h b/core/Macros.h
+index b95e7a8..5892a54 100644
+--- a/core/Macros.h
++++ b/core/Macros.h
+@@ -71,7 +71,7 @@ DEFINE_int32(sender_group_nop_count, 40000, "# nop insts to executes during TCP
+ DEFINE_int32(granule_count, 1, "# granules in a partition");
+ DEFINE_bool(hstore_active_active, false, "H-Store style active-active replication");
+ 
+-DEFINE_bool(use_cxl_transport, false, "use CXL transport instead of network transport");
++DEFINE_bool(use_cxl_transport, true, "use CXL transport instead of network transport");
+ DEFINE_bool(use_output_thread, false, "do you want an output thread?");
+ DEFINE_uint64(cxl_trans_entry_struct_size, 8192, "size of enrty in a MPSC ringbuffer");
+ DEFINE_uint64(cxl_trans_entry_num, 4096, "number of entries per MPSC ringbuffer");
 diff --git a/common/tigon_latch.h b/common/tigon_latch.h
 new file mode 100644
 index 0000000..07a2ff6

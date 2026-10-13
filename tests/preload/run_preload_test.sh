@@ -41,6 +41,11 @@ if ! "$victim" "$nthreads" "$iters"; then
     exit 1
 fi
 
+# Do not let the exported preload library instrument the helper commands below.
+# Each helper is a separate process and its zero-activity destructor would
+# truncate the target's stats file.
+unset LD_PRELOAD DYLD_INSERT_LIBRARIES
+
 if [ ! -s "$stats" ]; then
     echo "FAIL: shim produced no stats dump (not loaded at all?)" >&2
     exit 1

@@ -9,6 +9,10 @@ BUILD_DIR="${1:-$REPO_ROOT/build/apps/tigon_db_bench}"
 [[ $# -gt 0 ]] && shift
 TIGON_DIR="$SCRIPT_DIR/tigon"
 PATCH="$SCRIPT_DIR/patches/0001-mutex-benchmark-latch-redirection.patch"
+CMAKE_BIN="${CMAKE_BIN:-/usr/bin/cmake}"
+if [[ ! -x "$CMAKE_BIN" ]]; then
+    CMAKE_BIN="$(command -v cmake)"
+fi
 
 if [[ "$(uname -s)" != "Linux" ]]; then
     echo "error: Tigon only builds on Linux (x86_64): the bundled libcxlalloc_static.a is an ELF archive" >&2
@@ -32,13 +36,14 @@ fi
 echo "==> Configuring Tigon in $BUILD_DIR..."
 mkdir -p "$BUILD_DIR"
 
-cmake -S "$SCRIPT_DIR/tigon" -B "$BUILD_DIR" \
+"$CMAKE_BIN" -S "$SCRIPT_DIR/tigon" -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DTIGON_USE_PTHREAD_MUTEX=ON \
     "$@"
 
 NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 echo "==> Building Tigon with $NCPU jobs..."
-cmake --build "$BUILD_DIR" -j "$NCPU"
+"$CMAKE_BIN" --build "$BUILD_DIR" -j "$NCPU"
 
 echo "==> Tigon build complete: $BUILD_DIR/bench_ycsb, $BUILD_DIR/bench_tpcc"

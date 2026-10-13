@@ -41,6 +41,7 @@ def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, criti
         cmd = [
             "./scripts/with_lock.sh",
             "-n", str(max(128, threads * 4)),
+            "-s", "app",
             mutex_name,
             Constants.executable,
             "--logtostderr=1",
