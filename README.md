@@ -84,8 +84,8 @@ python3 -m scripts.main 8 5 3 \
 
 **Tigon setup (Linux x86_64 only).** Tigon is a git submodule at `apps/tigon_db_bench/tigon` (pinned commit). Quick start on a fresh Linux machine:
 ```bash
-git clone --recurse-submodules -b tigon-benchmark-submodule <repo-url> && cd mutex_benchmark
-# (or, in an existing clone: git submodule update --init)
+git clone -b tigon-benchmark-submodule <repo-url> && cd mutex_benchmark
+git submodule update --init apps/tigon_db_bench/tigon   # path required: cxl/emucxl is an unmapped legacy gitlink
 sudo apt install build-essential cmake meson ninja-build clang python3 \
   libjemalloc-dev libgoogle-glog-dev libgflags-dev
 meson setup build && meson compile -C build mutex_preload
