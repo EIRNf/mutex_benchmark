@@ -62,6 +62,18 @@ python3 -m scripts.main 8 5 3 \
   --alloc cxl-hardware
 ```
 
+`cxl_fast_exp` is the CXL-resident exclusive lock adapted from the supplied
+fast-exp bridge. It is included in `hardware_cxl`; select it directly with
+`-i cxl_fast_exp` when comparing CXL placement:
+```bash
+python3 -m scripts.main 8 5 3 \
+  --bench max \
+  --capture throughput \
+  --sweep threads 1 8 1 \
+  -i cxl_fast_exp \
+  --alloc cxl-hardware
+```
+
 **Re-plot from existing CSVs (no re-run):**
 ```bash
 python3 -m scripts.main 8 5 3 \

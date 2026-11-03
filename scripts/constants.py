@@ -252,6 +252,7 @@ class Constants:
             [
                 "bakery", "bakery_nonatomic", "boulangerie", "burns_lamport",
                 "dijkstra", "dijkstra_nonatomic", "spin", "exp_spin",
+                "cxl_fast_exp",
                 "knuth", "lamport", "mcs", "peterson", "ticket",
                 "linear_lamport_elevator", "tree_lamport_elevator",
                 "linear_cas_elevator", "linear_bl_elevator",
@@ -280,6 +281,7 @@ class Constants:
         HARDWARE_CXL_SET = [
             "spin",
             "exp_spin",
+            "cxl_fast_exp",
             "ticket",
             # "mcs",
             "mcs_local",

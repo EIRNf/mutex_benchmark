@@ -25,6 +25,7 @@
 #include "../lock/dijkstra_nonatomic_sleeper_lock.cpp"
 #include "../lock/spin_lock.hpp"
 #include "../lock/exp_spin_lock.cpp"
+#include "../lock/cxl_fast_exp_lock.cpp"
 #include "../lock/wait_spin_lock.cpp"
 #include "../lock/bakery_mutex.cpp"
 #include "../lock/bakery_nonatomic_mutex.cpp"
@@ -276,6 +277,7 @@ static const std::unordered_map<std::string, std::function<SoftwareMutex*()>> kM
     {"spin", MK(SpinLock)},
     {"hard_spin", MK(HardSpinLock)},
     {"exp_spin", MK(ExponentialSpinLock)},
+    {"cxl_fast_exp", MK(CXLFastExpLock)},
     {"wait_spin", MK(WaitSpinLock)},
     {"bakery", MK(BakeryMutex)},
     {"bakery_nonatomic", MK(BakeryNonAtomicMutex)},
