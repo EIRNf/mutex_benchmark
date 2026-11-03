@@ -144,6 +144,19 @@ This binds all processes to the selected NUMA node, runs the `paper` lock set,
 and writes separate CSVs and faceted plots under `data/dram_baseline/`.
 For a quick Tigon-only run, add `--tigon-only --threads 4 --seconds 5`.
 
+**CXL NUMA baseline for all applications:**
+```bash
+scripts/run_cxl_baseline.sh \
+  --cxl-node 1 \
+  --threads 8 \
+  --seconds 30 \
+  --repetitions 3
+```
+This runs Tigon YCSB, max-contention, min-contention, and grouped-contention
+under the selected CXL NUMA node. Tigon uses `CXLALLOC_BACKEND=mmap` so the
+NUMA policy places its allocations on CXL memory; the native `cxl` allocator
+backend is not used because the bundled archive does not support it.
+
 **Lock-level latency CDF (no sweep):**
 ```bash
 python3 -m scripts.main 4 1 5 \
