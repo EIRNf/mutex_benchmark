@@ -3,6 +3,7 @@
 #include "../utils/region_layout.hpp"
 #include <stdexcept>
 #include <atomic>
+#include <new>
 
 class TicketMutex : public virtual SoftwareMutex {
 public:
@@ -16,6 +17,8 @@ public:
         _cxl_region = (volatile char *)ALLOCATE(_cxl_region_size);
         next_ticket = RegionLayout::resolve(next_ticket_handle, _cxl_region);
         now_serving = RegionLayout::resolve(now_serving_handle, _cxl_region);
+        new (next_ticket) std::atomic_size_t{0};
+        new (now_serving) std::atomic_size_t{0};
     }
 
     void lock(size_t thread_id) override {
