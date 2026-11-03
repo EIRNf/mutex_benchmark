@@ -37,6 +37,7 @@ def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, criti
 
     if Constants.bench.startswith("tigon"):
         run_sec = max(1, int(Constants.bench_n_seconds))
+        warmup_sec = min(1, run_sec - 1)
         # Use with_lock.sh to inject the mutex via LD_PRELOAD
         cmd = [
             "./scripts/with_lock.sh",
@@ -50,7 +51,7 @@ def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, criti
             f"--threads={threads}",
             f"--partition_num={threads}",
             f"--time_to_run={run_sec}",
-            "--time_to_warmup=1",
+            f"--time_to_warmup={warmup_sec}",
             "--protocol=TwoPL",
         ]
         if "tpcc" in Constants.bench:

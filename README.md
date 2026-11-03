@@ -105,6 +105,33 @@ python3 -m scripts.main 8 5 3 \
   -s champions
 ```
 
+The paper comparison lock list is available as `-s paper`:
+`bakery`, `boulangerie`, `lamport`, the four linear/tree elevator variants,
+`peterson`, `knuth`, `spin`, `exp_spin`, and `ticket`.
+
+**Tigon/CXL environment check and basic lock comparison:**
+```bash
+scripts/tigon_cxl_experiment.sh
+```
+This verifies NUMA/DAX/CXL discovery, builds the project and Tigon, runs
+`mmap`, `shm`, and `cxl` allocator smoke tests with bounded timeouts, and
+compares a small lock set. Results are written to `data/tigon_cxl/` as
+`environment.txt`, `smoke.csv`, `results.csv`, logs, and (when matplotlib is
+available) `comparison.png`. Use `--cxl-node N` to add NUMA membind placement,
+or `--smoke-only` / `--compare-only` to run a single phase.
+
+**DRAM baseline for Tigon, max, and min benchmarks:**
+```bash
+scripts/run_dram_baseline.sh \
+  --dram-node 0 \
+  --threads 8 \
+  --seconds 30 \
+  --repetitions 3
+```
+This binds all processes to the selected NUMA node, runs the `paper` lock set,
+and writes separate CSVs and faceted plots under `data/dram_baseline/`.
+For a quick Tigon-only run, add `--tigon-only --threads 4 --seconds 5`.
+
 **Lock-level latency CDF (no sweep):**
 ```bash
 python3 -m scripts.main 4 1 5 \

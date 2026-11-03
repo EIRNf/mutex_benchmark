@@ -144,7 +144,7 @@ class Constants:
         CHAMPIONS_SET = [
             # classical champions
             "exp_spin",
-            "ticket",
+            # "ticket",
             "mcs",
             "hclh",
             "cohortTicket",
@@ -212,6 +212,23 @@ class Constants:
             "hard_spin",
         ]
 
+        # Lock list matching the requested paper comparison table.  Keep the
+        # order stable so generated CSVs and plots use the same presentation.
+        PAPER_SET = [
+            "bakery",
+            "boulangerie",
+            "lamport",
+            "linear_lamport_elevator",
+            "linear_bl_elevator",
+            "tree_lamport_elevator",
+            "tree_bl_elevator",
+            "peterson",
+            "knuth",
+            "spin",
+            "exp_spin",
+            "ticket",
+        ]
+
         # Broad kitchen-sink set (one of everything that works).
         BASE_SET = (
             SPIN_SERIES
@@ -276,6 +293,7 @@ class Constants:
             "sleeper": SLEEPER_SET,
             "elevator": ELEVATOR_SET,
             "fencing": FENCING_SET,
+            "paper": PAPER_SET,
             "base": BASE_SET,
             "cxl": CXL_SET,
             "software_cxl": SOFTWARE_CXL_SET,
