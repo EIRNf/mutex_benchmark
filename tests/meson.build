@@ -14,6 +14,14 @@ ticket_lock_test = executable(
 
 test('ticket_lock_test', ticket_lock_test)
 
+lamport_lock_test = executable(
+  'lamport_lock_test',
+  'lamport_lock_test.cpp',
+  dependencies : [lock_dep, utils_dep, boost_dep, nsync_dep, numa_dep],
+)
+
+test('lamport_lock_test', lamport_lock_test)
+
 region_layout_test = executable(
   'region_layout_test',
   'region_layout_test.cpp',

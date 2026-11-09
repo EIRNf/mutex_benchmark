@@ -6,6 +6,7 @@
 #include "lock.hpp"
 #include "trylock.hpp"
 #include "../utils/cxl_utils.hpp"
+#include <new>
 #include <stdexcept>
 #include <iostream>
 
@@ -35,11 +36,16 @@ public:
         size_t offset = 0;
         offset += std::hardware_destructive_interference_size * (num_threads + 1);
         this->x = (volatile std::atomic<size_t>*)&_cxl_region[offset];
+        new (const_cast<std::atomic<size_t>*>(this->x)) std::atomic<size_t>{0};
         offset += sizeof(size_t);
         this->y = (volatile std::atomic<size_t>*)&_cxl_region[offset];
+        new (const_cast<std::atomic<size_t>*>(this->y)) std::atomic<size_t>{0};
         offset += sizeof(size_t);
         this->fast = (volatile bool*)&_cxl_region[offset];
         *fast = false;
+        for (size_t thread_id = 0; thread_id < num_threads; ++thread_id) {
+            *get_b(thread_id) = false;
+        }
         this->num_threads = num_threads;
     }
 
