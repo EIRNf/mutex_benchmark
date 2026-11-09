@@ -146,6 +146,7 @@ and writes separate CSVs and faceted plots under `data/dram_baseline/`.
 For a quick Tigon-only run, add `--tigon-only --threads 4 --seconds 5`.
 Each invocation creates a timestamped run directory below
 `data/dram_baseline/`; its raw CSVs and figures stay associated with that run.
+Use `--skip 4` to sample 4, 8, ..., 64 threads instead of every thread count.
 
 **CXL NUMA baseline for all applications:**
 ```bash
@@ -161,6 +162,7 @@ NUMA policy places its allocations on CXL memory; the native `cxl` allocator
 backend is not used because the bundled archive does not support it.
 Each invocation writes its raw CSVs and figures below a timestamped directory
 under `data/cxl_baseline/`.
+Use `--skip 4` for a faster 4, 8, ..., 64-thread sweep.
 
 **Lock-level latency CDF (no sweep):**
 ```bash

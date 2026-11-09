@@ -14,6 +14,8 @@ Options:
   --threads N         Maximum thread count (default: 8)
   --seconds N         Measured seconds per point (default: 30)
   --repetitions N     Repetitions per point (default: 3)
+  --skip N            Thread sweep step (default: 1)
+  --thread-step N     Alias for --skip
   --locks LIST        Comma-separated lock names (default: paper)
   --apps LIST         tigon_ycsb,max,min,grouped (default: all)
   --groups N          Group count for grouped (default: 2)
@@ -27,6 +29,16 @@ Example:
 EOF
 }
 
+gcd() {
+    local a="$1" b="$2" remainder
+    while (( b != 0 )); do
+        remainder=$((a % b))
+        a="$b"
+        b="$remainder"
+    done
+    printf '%s\n' "$a"
+}
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
@@ -34,6 +46,7 @@ cxl_node=1
 max_threads=64
 seconds=10
 repetitions=3
+thread_step=1
 locks=paper
 apps=tigon_ycsb,max,min,grouped
 groups=2
@@ -46,6 +59,7 @@ while [[ $# -gt 0 ]]; do
         --threads) max_threads="$2"; shift ;;
         --seconds) seconds="$2"; shift ;;
         --repetitions) repetitions="$2"; shift ;;
+        --skip|--thread-step) thread_step="$2"; shift ;;
         --locks) locks="$2"; shift ;;
         --apps) apps="$2"; shift ;;
         --groups) groups="$2"; shift ;;
@@ -60,8 +74,9 @@ done
 if ! [[ "$cxl_node" =~ ^[0-9]+$ && "$max_threads" =~ ^[0-9]+$ &&
         "$seconds" =~ ^[0-9]+$ && "$repetitions" =~ ^[0-9]+$ &&
         "$groups" =~ ^[0-9]+$ && "$max_threads" -gt 0 &&
-        "$seconds" -gt 0 && "$repetitions" -gt 0 && "$groups" -gt 0 ]]; then
-    echo "error: node, threads, seconds, repetitions, and groups must be positive integers" >&2
+        "$seconds" -gt 0 && "$repetitions" -gt 0 && "$groups" -gt 0 &&
+        "$thread_step" =~ ^[0-9]+$ && "$thread_step" -gt 0 ]]; then
+    echo "error: node, threads, seconds, repetitions, groups, and skip must be positive integers" >&2
     exit 2
 fi
 if ! command -v numactl >/dev/null 2>&1; then
@@ -107,15 +122,17 @@ for app in "${app_list[@]}"; do
     echo "==> Running $app on CXL NUMA node $cxl_node"
 
     extra_args=()
-    sweep_args=(--sweep threads 1 "$max_threads" 1)
+    sweep_args=(--sweep threads "$thread_step" "$max_threads" "$thread_step")
     if [[ "$app" == grouped ]]; then
-        grouped_stop=$((max_threads / groups * groups))
-        if (( grouped_stop < groups )); then
-            echo "error: --threads must be at least --groups for grouped" >&2
+        grouped_step=$((thread_step * groups / $(gcd "$thread_step" "$groups")))
+        grouped_start="$grouped_step"
+        grouped_stop=$((max_threads / grouped_step * grouped_step))
+        if (( grouped_stop < grouped_start )); then
+            echo "error: --threads must be at least $grouped_start for grouped" >&2
             exit 2
         fi
         extra_args+=(--groups "$groups")
-        sweep_args=(--sweep threads "$groups" "$grouped_stop" "$groups")
+        sweep_args=(--sweep threads "$grouped_start" "$grouped_stop" "$grouped_step")
     fi
 
     numactl --membind="$cxl_node" env \
