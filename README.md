@@ -135,8 +135,9 @@ Each invocation stores those artifacts below a timestamped run directory.
 
 **DRAM baseline for Tigon, max, and min benchmarks:**
 ```bash
-scripts/run_dram_baseline.sh \
-  --dram-node 0 \
+scripts/run_baseline.sh \
+  --memory dram \
+  --node 0 \
   --threads 8 \
   --seconds 30 \
   --repetitions 3
@@ -150,8 +151,9 @@ Use `--skip 4` to sample 4, 8, ..., 64 threads instead of every thread count.
 
 **CXL NUMA baseline for all applications:**
 ```bash
-scripts/run_cxl_baseline.sh \
-  --cxl-node 1 \
+scripts/run_baseline.sh \
+  --memory cxl \
+  --node 1 \
   --threads 8 \
   --seconds 30 \
   --repetitions 3
@@ -163,6 +165,9 @@ backend is not used because the bundled archive does not support it.
 Each invocation writes its raw CSVs and figures below a timestamped directory
 under `data/cxl_baseline/`.
 Use `--skip 4` for a faster 4, 8, ..., 64-thread sweep.
+
+The legacy `run_dram_baseline.sh` and `run_cxl_baseline.sh` commands remain
+as compatibility wrappers around this unified runner.
 
 **Lock-level latency CDF (no sweep):**
 ```bash
