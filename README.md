@@ -131,6 +131,7 @@ compares a small lock set. Results are written to `data/tigon_cxl/` as
 `environment.txt`, `smoke.csv`, `results.csv`, logs, and (when matplotlib is
 available) `comparison.png`. Use `--cxl-node N` to add NUMA membind placement,
 or `--smoke-only` / `--compare-only` to run a single phase.
+Each invocation stores those artifacts below a timestamped run directory.
 
 **DRAM baseline for Tigon, max, and min benchmarks:**
 ```bash
@@ -143,6 +144,8 @@ scripts/run_dram_baseline.sh \
 This binds all processes to the selected NUMA node, runs the `paper` lock set,
 and writes separate CSVs and faceted plots under `data/dram_baseline/`.
 For a quick Tigon-only run, add `--tigon-only --threads 4 --seconds 5`.
+Each invocation creates a timestamped run directory below
+`data/dram_baseline/`; its raw CSVs and figures stay associated with that run.
 
 **CXL NUMA baseline for all applications:**
 ```bash
@@ -156,6 +159,8 @@ This runs Tigon YCSB, max-contention, min-contention, and grouped-contention
 under the selected CXL NUMA node. Tigon uses `CXLALLOC_BACKEND=mmap` so the
 NUMA policy places its allocations on CXL memory; the native `cxl` allocator
 backend is not used because the bundled archive does not support it.
+Each invocation writes its raw CSVs and figures below a timestamped directory
+under `data/cxl_baseline/`.
 
 **Lock-level latency CDF (no sweep):**
 ```bash

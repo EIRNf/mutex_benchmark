@@ -35,8 +35,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 dram_node=0
-max_threads=8
-seconds=30
+max_threads=64
+seconds=10
 repetitions=3
 locks="paper"
 output_root="$ROOT/data/dram_baseline"
@@ -76,8 +76,9 @@ if ! command -v numactl >/dev/null 2>&1; then
     exit 1
 fi
 
-mkdir -p "$output_root"
-mkdir -p "$output_root/tigon_ycsb" "$output_root/max" "$output_root/min"
+run_timestamp="$(date -u +%Y%m%dT%H%M%S%NZ)"
+run_root="$output_root/$run_timestamp"
+mkdir -p "$run_root/tigon_ycsb" "$run_root/max" "$run_root/min"
 if [[ "$locks" == paper ]]; then
     lock_args=(-s paper)
 else
@@ -103,7 +104,7 @@ if (( ! contention_only )); then
         --capture throughput \
         --sweep threads 1 "$max_threads" 1 \
         --plot faceted \
-        --data-folder "$output_root/tigon_ycsb" \
+        --data-folder "$run_root/tigon_ycsb" \
         "${lock_args[@]}"
 fi
 
@@ -116,7 +117,7 @@ if (( ! tigon_only )); then
         --capture throughput \
         --sweep threads 1 "$max_threads" 1 \
         --plot faceted \
-        --data-folder "$output_root/max" \
+        --data-folder "$run_root/max" \
         "${lock_args[@]}"
 
     echo "==> Running min contention DRAM baseline on NUMA node $dram_node"
@@ -127,7 +128,7 @@ if (( ! tigon_only )); then
         --capture throughput \
         --sweep threads 1 "$max_threads" 1 \
         --plot faceted \
-        --data-folder "$output_root/min" \
+        --data-folder "$run_root/min" \
         "${lock_args[@]}"
 fi
 
@@ -135,9 +136,9 @@ cat <<EOF
 DRAM baseline complete.
 
 Data and plots:
-  $output_root/tigon_ycsb/
-  $output_root/max/
-  $output_root/min/
+  $run_root/tigon_ycsb/
+  $run_root/max/
+  $run_root/min/
 
 All runs were bound with:
   numactl --membind=$dram_node

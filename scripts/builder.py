@@ -22,6 +22,7 @@ def build():
     os.makedirs("build", exist_ok=True)
     os.makedirs("data", exist_ok=True)
     os.makedirs(Constants.Defaults.DATA_FOLDER, exist_ok=True)
+    os.makedirs(Constants.data_folder, exist_ok=True)
     os.makedirs(Constants.Defaults.LOGS_FOLDER, exist_ok=True)
 
     if os.environ.get("MUTEX_BENCH_SKIP_BUILD") == "1":

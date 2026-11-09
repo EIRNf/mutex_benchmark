@@ -1,5 +1,7 @@
 import argparse
 import logging
+import os
+from datetime import datetime
 
 from .constants import Constants
 from .logger import logger
@@ -292,7 +294,11 @@ def init_args():
     Constants.rusage = args.capture == "rusage"
     Constants.thread_level = args.capture in ("throughput", "rusage")
 
-    Constants.data_folder = args.data_folder
+    data_folder = args.data_folder
+    if not args.reuse_data and data_folder == Constants.Defaults.DATA_FOLDER:
+        run_timestamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
+        data_folder = os.path.join(data_folder, run_timestamp)
+    Constants.data_folder = data_folder
     logger.debug(Constants.data_folder)
     Constants.logs_folder = args.log_folder
     Constants.multithreaded = args.multithreaded

@@ -31,8 +31,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 cxl_node=1
-max_threads=8
-seconds=30
+max_threads=64
+seconds=10
 repetitions=3
 locks=paper
 apps=tigon_ycsb,max,min,grouped
@@ -83,7 +83,8 @@ for app in "${app_list[@]}"; do
     fi
 done
 
-mkdir -p "$output_root"
+run_timestamp="$(date -u +%Y%m%dT%H%M%S%NZ)"
+run_root="$output_root/$run_timestamp"
 if [[ "$locks" == paper ]]; then
     lock_args=(-s paper)
 else
@@ -101,7 +102,7 @@ if (( ! skip_build )); then
 fi
 
 for app in "${app_list[@]}"; do
-    app_output="$output_root/$app"
+    app_output="$run_root/$app"
     mkdir -p "$app_output"
     echo "==> Running $app on CXL NUMA node $cxl_node"
 
@@ -136,7 +137,7 @@ CXL NUMA baseline complete.
 Applications:
   $apps
 Results and plots:
-  $output_root/
+  $run_root/
 Placement:
   numactl --membind=$cxl_node
 Tigon allocator:

@@ -19,7 +19,7 @@ Options:
   --seconds N               Measured seconds per run (default: 10)
   --warmup N                Warmup seconds (default: 2)
   --cxl-node N              NUMA node for an additional membind probe
-  --output DIR              Output directory (default: data/tigon_cxl)
+  --output DIR              Output root (default: data/tigon_cxl)
   -h, --help                Show this help
 
 Examples:
@@ -42,7 +42,7 @@ threads="1,2,4"
 seconds=10
 warmup=2
 cxl_node=""
-output_dir="$ROOT/data/tigon_cxl"
+output_root="$ROOT/data/tigon_cxl"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -56,7 +56,7 @@ while [[ $# -gt 0 ]]; do
         --seconds) seconds="$2"; shift ;;
         --warmup) warmup="$2"; shift ;;
         --cxl-node) cxl_node="$2"; shift ;;
-        --output) output_dir="$2"; shift ;;
+        --output) output_root="$2"; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "error: unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -72,6 +72,8 @@ if ! [[ "$seconds" =~ ^[0-9]+$ && "$warmup" =~ ^[0-9]+$ && "$seconds" -gt 0 ]]; 
     exit 2
 fi
 
+run_timestamp="$(date -u +%Y%m%dT%H%M%S%NZ)"
+output_dir="$output_root/$run_timestamp"
 mkdir -p "$output_dir"
 report="$output_dir/environment.txt"
 results="$output_dir/results.csv"
