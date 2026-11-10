@@ -15,13 +15,16 @@ def get_data_file_name(mutex_name, i, **iter_kwargs):
     capture = getattr(Constants, "capture", "latency")
     alloc_tag = ""
     if Constants.hardware_cxl:
-        alloc_tag = "-cxl-hw"
+        alloc_tag = f"-cxl-hw-node{Constants.numa_node}"
     elif Constants.software_cxl:
         alloc_tag = "-cxl-sw"
 
+    bench_tag = Constants.bench
+    if Constants.bench == "damer_moe":
+        bench_tag += f"-{Constants.moe_movement}-{Constants.moe_granularity}-{Constants.moe_count}"
     name_root = (
         f"{Constants.data_folder}/"
-        f"{mutex_name}-{Constants.bench}-{capture}{alloc_tag}-rep{i}"
+        f"{mutex_name}-{bench_tag}-{capture}{alloc_tag}-rep{i}"
     )
     for key, value in iter_kwargs.items():
         name_root += f"-{key}={value}"
@@ -66,6 +69,24 @@ def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, criti
                 "--read_write_ratio=80",
                 "--keys=200000",
             ])
+        logger.debug(f"Bench command: {cmd}")
+        return cmd
+
+    if Constants.bench == "damer_moe":
+        cmd = [
+            Constants.executable,
+            mutex_name,
+            str(threads),
+            str(Constants.bench_n_seconds),
+            "--csv",
+            "--thread-level",
+            "--plan", Constants.Defaults.MOE_PLAN_PATH,
+            "--experts", str(Constants.moe_experts),
+            "--granularity", Constants.moe_granularity,
+            "--movement", Constants.moe_movement,
+            "--count", Constants.moe_count,
+            "--kv-scale", str(Constants.moe_kv_scale),
+        ]
         logger.debug(f"Bench command: {cmd}")
         return cmd
 
@@ -142,14 +163,26 @@ def _run_command_to_csv(command, timeout_s: float, threads: int = 1, seconds: fl
     subprocess.run() kills the child process before raising, so no cleanup needed.
     """
     try:
+        run_env = None
+        if Constants.hardware_cxl:
+            if Constants.numa_node is None:
+                raise RuntimeError("--numa-node is required for hardware-CXL runs")
+            run_env = os.environ.copy()
+            run_env["MUTEX_BENCH_NUMA_NODE"] = str(Constants.numa_node)
+
         result = subprocess.run(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout_s,
+            env=run_env,
         )
     except subprocess.TimeoutExpired:
         raise
+    if os.environ.get("MUTEX_BENCH_PLACEMENT") == "1":
+        for line in result.stderr.decode("utf-8", errors="replace").splitlines():
+            if line.startswith("PLACEMENT "):
+                logger.info(line)
     if result.returncode != 0:
         stderr = result.stderr.decode("utf-8", errors="replace")
         raise RuntimeError(f"Benchmark command failed: {command}\n{stderr}")

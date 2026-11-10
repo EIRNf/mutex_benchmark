@@ -227,6 +227,7 @@ class Constants:
             "spin",
             "exp_spin",
             "ticket",
+            "cxl_fast_exp"
         ]
 
         # Broad kitchen-sink set (one of everything that works).
@@ -321,7 +322,9 @@ class Constants:
             "tigon": "./build/apps/tigon_db_bench/bench_ycsb",
             "tigon_ycsb": "./build/apps/tigon_db_bench/bench_ycsb",
             "tigon_tpcc": "./build/apps/tigon_db_bench/bench_tpcc",
+            "damer_moe": "./build/apps/damer_moe_bench/damer_moe_bench",
         }
+        MOE_PLAN_PATH = "./build/apps/damer_moe_bench/moe_plan.tsv"
         BENCH_N_THREADS = 10
         BENCH_N_SECONDS = 1
 
@@ -356,10 +359,18 @@ class Constants:
     max_n_points         = Defaults.MAX_N_POINTS
     log                  = Defaults.LOG
     bench: str           = Defaults.BENCH
+    damer_root: str | None = None
+    moe_workload: str | None = None
+    moe_experts: int = 8
+    moe_granularity: str = "expert"
+    moe_movement: str = "fused"
+    moe_count: str = "events"
+    moe_kv_scale: float = 1.0 / 64.0
     iter: bool
     rusage: bool
     software_cxl: bool
     hardware_cxl: bool
+    numa_node: int | None = None
     skip_plotting: bool
     show: bool = False
     averages: bool

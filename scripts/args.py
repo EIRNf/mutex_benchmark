@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import sys
 from datetime import datetime
 
 from .constants import Constants
@@ -72,7 +73,41 @@ def _parse_sweep_config(args, parser):
     Constants.iter = True
 
 
+def _validate_numa_node(args, parser):
+    if args.alloc != "cxl-hardware":
+        if args.numa_node is not None:
+            parser.error("--numa-node only applies to --alloc cxl-hardware")
+        return
+
+    if args.numa_node is None:
+        parser.error("--numa-node is required when --alloc cxl-hardware")
+    if args.numa_node < 0:
+        parser.error("--numa-node must be >= 0")
+    if not sys.platform.startswith("linux"):
+        parser.error("--alloc cxl-hardware requires Linux")
+
+    meminfo_path = f"/sys/devices/system/node/node{args.numa_node}/meminfo"
+    memory_kib = None
+    try:
+        with open(meminfo_path, encoding="utf-8") as meminfo:
+            for line in meminfo:
+                fields = line.split()
+                if fields[:3] == ["Node", str(args.numa_node), "MemTotal:"]:
+                    try:
+                        memory_kib = int(fields[3])
+                    except (IndexError, ValueError):
+                        parser.error(f"Could not read memory size for NUMA node {args.numa_node}")
+                    break
+    except OSError as exc:
+        parser.error(f"NUMA node {args.numa_node} is not available: {exc}")
+
+    if memory_kib is None or memory_kib <= 0:
+        parser.error(f"NUMA node {args.numa_node} has no online memory")
+
+
 def _validate_context(args, parser):
+    _validate_numa_node(args, parser)
+
     if args.bench == "grouped":
         if args.groups is None or args.groups <= 0:
             parser.error("--groups must be provided and > 0 when --bench grouped")
@@ -97,6 +132,14 @@ def _validate_context(args, parser):
 
     if args.bench.startswith("tigon") and args.capture != "throughput":
         parser.error(f"--bench {args.bench} currently supports --capture throughput")
+
+    if args.bench == "damer_moe":
+        if args.capture != "throughput":
+            parser.error("--bench damer_moe currently supports --capture throughput")
+        if args.moe_experts < 1:
+            parser.error("--moe-experts must be >= 1")
+        if args.moe_kv_scale <= 0:
+            parser.error("--moe-kv-scale must be > 0")
 
     if args.capture == "latency":
         if args.variability:
@@ -168,9 +211,44 @@ def init_args():
     run_group = parser.add_argument_group("run options (what executes)")
     run_group.add_argument(
         "--bench",
-        choices=("max", "min", "grouped", "tigon", "tigon_ycsb", "tigon_tpcc"),
+        choices=("max", "min", "grouped", "tigon", "tigon_ycsb", "tigon_tpcc", "damer_moe"),
         default="max",
         help="benchmark executable to run",
+    )
+    run_group.add_argument(
+        "--damer-root",
+        default=None,
+        help="Damer checkout used to compile the MoE workload (damer_moe only; default ../Damer)",
+    )
+    run_group.add_argument(
+        "--moe-workload",
+        default=None,
+        help="Damer workload JSON, absolute or relative to --damer-root (damer_moe only)",
+    )
+    run_group.add_argument("--moe-experts", type=int, default=8, help="expert KV slots (damer_moe only)")
+    run_group.add_argument(
+        "--moe-granularity",
+        choices=("expert", "global"),
+        default="expert",
+        help="one lock per expert KV slot or a single global lock (damer_moe only)",
+    )
+    run_group.add_argument(
+        "--moe-movement",
+        choices=("fused", "staged"),
+        default="fused",
+        help="Damer-fused single-pass movement vs staged baseline (damer_moe only)",
+    )
+    run_group.add_argument(
+        "--moe-count",
+        choices=("events", "tokens"),
+        default="events",
+        help="throughput unit recorded per thread (damer_moe only)",
+    )
+    run_group.add_argument(
+        "--moe-kv-scale",
+        type=float,
+        default=1.0 / 64.0,
+        help="scale applied to Damer event byte sizes to fit memory (damer_moe only)",
     )
     run_group.add_argument(
         "--sweep",
@@ -260,6 +338,12 @@ def init_args():
         help="allocation mode for benchmark build/runtime",
     )
     selection_group.add_argument(
+        "--numa-node",
+        type=int,
+        metavar="N",
+        help="memory NUMA node for --alloc cxl-hardware (required)",
+    )
+    selection_group.add_argument(
         "--log-folder",
         type=str,
         default=Constants.logs_folder,
@@ -303,6 +387,13 @@ def init_args():
     Constants.logs_folder = args.log_folder
     Constants.multithreaded = args.multithreaded
     Constants.bench = args.bench
+    Constants.damer_root = args.damer_root
+    Constants.moe_workload = args.moe_workload
+    Constants.moe_experts = args.moe_experts
+    Constants.moe_granularity = args.moe_granularity
+    Constants.moe_movement = args.moe_movement
+    Constants.moe_count = args.moe_count
+    Constants.moe_kv_scale = args.moe_kv_scale
     Constants.groups = args.groups
     Constants.stdev_scale = args.stdev
     Constants.executable = _resolve_executable_for_bench(args.bench)
@@ -331,6 +422,7 @@ def init_args():
 
     Constants.software_cxl = args.alloc == "cxl-software"
     Constants.hardware_cxl = args.alloc == "cxl-hardware"
+    Constants.numa_node = args.numa_node
 
     level = getattr(logging, args.log.upper(), Constants.Defaults.LOG)
     Constants.log = level
