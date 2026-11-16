@@ -1,5 +1,6 @@
 import argparse
 import logging
+import math
 import os
 import sys
 from datetime import datetime
@@ -108,6 +109,79 @@ def _validate_numa_node(args, parser):
 def _validate_context(args, parser):
     _validate_numa_node(args, parser)
 
+    tigon_option_names = (
+        "tigon_query",
+        "tigon_protocol",
+        "tigon_partitions",
+        "tigon_partition_ratio",
+        "tigon_warmup_seconds",
+        "tigon_read_write_ratio",
+        "tigon_read_only_ratio",
+        "tigon_cross_ratio",
+        "tigon_cross_partitions",
+        "tigon_keys",
+        "tigon_zipf",
+        "tigon_neworder_dist",
+        "tigon_payment_dist",
+    )
+    is_tigon = args.bench.startswith("tigon")
+    if not is_tigon and any(getattr(args, name) is not None for name in tigon_option_names):
+        parser.error("--tigon-* options only apply to --bench tigon/tigon_ycsb/tigon_tpcc")
+
+    if is_tigon:
+        is_tpcc = args.bench == "tigon_tpcc"
+        valid_queries = (
+            {"mixed", "first_two", "neworder", "payment", "test"}
+            if is_tpcc
+            else {"mixed", "rmw", "scan", "insert", "delete"}
+        )
+        if args.tigon_query is not None and args.tigon_query not in valid_queries:
+            parser.error(
+                f"--tigon-query {args.tigon_query!r} is not valid for --bench {args.bench}; "
+                f"choose from {', '.join(sorted(valid_queries))}"
+            )
+        if args.tigon_partitions is not None and args.tigon_partitions < 1:
+            parser.error("--tigon-partitions must be >= 1")
+        if args.tigon_partitions is not None and args.tigon_partition_ratio is not None:
+            parser.error("--tigon-partitions and --tigon-partition-ratio cannot be used together")
+        if args.tigon_warmup_seconds is not None and args.tigon_warmup_seconds < 0:
+            parser.error("--tigon-warmup-seconds must be >= 0")
+
+        ycsb_option_names = (
+            "tigon_read_write_ratio",
+            "tigon_read_only_ratio",
+            "tigon_cross_ratio",
+            "tigon_cross_partitions",
+            "tigon_keys",
+            "tigon_zipf",
+        )
+        tpcc_option_names = ("tigon_neworder_dist", "tigon_payment_dist")
+        workload_only_names = tpcc_option_names if is_tpcc else ycsb_option_names
+        irrelevant_names = ycsb_option_names if is_tpcc else tpcc_option_names
+        if any(getattr(args, name) is not None for name in irrelevant_names):
+            parser.error(
+                f"{'YCSB' if is_tpcc else 'TPC-C'}-specific --tigon-* options "
+                f"cannot be used with --bench {args.bench}"
+            )
+        if is_tpcc:
+            for name in workload_only_names:
+                value = getattr(args, name)
+                if value is not None and not 0 <= value <= 100:
+                    parser.error(f"--{name.replace('_', '-')} must be between 0 and 100")
+        else:
+            for name in ("tigon_read_write_ratio", "tigon_read_only_ratio", "tigon_cross_ratio"):
+                value = getattr(args, name)
+                if value is not None and not 0 <= value <= 100:
+                    parser.error(f"--{name.replace('_', '-')} must be between 0 and 100")
+            if args.tigon_cross_partitions is not None and args.tigon_cross_partitions < 1:
+                parser.error("--tigon-cross-partitions must be >= 1")
+            if args.tigon_keys is not None and args.tigon_keys < 1:
+                parser.error("--tigon-keys must be >= 1")
+            if args.tigon_zipf is not None and (
+                not math.isfinite(args.tigon_zipf) or args.tigon_zipf < 0
+            ):
+                parser.error("--tigon-zipf must be a finite value >= 0")
+
     if args.bench == "grouped":
         if args.groups is None or args.groups <= 0:
             parser.error("--groups must be provided and > 0 when --bench grouped")
@@ -148,6 +222,8 @@ def _validate_context(args, parser):
             parser.error("--speedup only applies to --capture throughput sweeps")
         if args.stdev != Constants.Defaults.STANDARD_DEVIATION_SCALE:
             parser.error("--stdev only applies to --capture throughput sweeps")
+        if args.heatmap_ref is not None or args.no_heatmap:
+            parser.error("--heatmap-ref/--no-heatmap only apply to throughput sweep plots")
         if args.plot in ("faceted", "combined"):
             parser.error("--plot faceted/combined only applies to throughput sweep plots")
         if args.sweep is not None and args.plot != "none":
@@ -177,6 +253,10 @@ def _validate_context(args, parser):
             parser.error("--scatter has no effect when --plot none")
         if args.max_n_points != Constants.Defaults.MAX_N_POINTS:
             parser.error("--max-n-points has no effect when --plot none")
+        if args.heatmap_ref is not None or args.no_heatmap:
+            parser.error("--heatmap-ref/--no-heatmap have no effect when --plot none")
+    if args.no_heatmap and args.heatmap_ref is not None:
+        parser.error("--heatmap-ref cannot be used with --no-heatmap")
 
     if args.stagger_ms is not None:
         if args.stagger_ms <= 0:
@@ -215,6 +295,39 @@ def init_args():
         default="max",
         help="benchmark executable to run",
     )
+    run_group.add_argument(
+        "--tigon-query",
+        choices=("mixed", "rmw", "scan", "insert", "delete", "first_two", "neworder", "payment", "test"),
+        help="Tigon query mix (YCSB: rmw/mixed/scan/insert/delete; TPC-C: mixed/first_two/neworder/payment/test)",
+    )
+    run_group.add_argument(
+        "--tigon-protocol",
+        choices=("Silo", "SiloGC", "Star", "Sundial", "TwoPL", "TwoPLGC", "Calvin", "HStore", "Aria", "TwoPLPasha", "SundialPasha"),
+        help="Tigon transaction protocol (default: TwoPL)",
+    )
+    run_group.add_argument(
+        "--tigon-partitions",
+        type=int,
+        help="fixed Tigon database partition count (default: match the worker thread count)",
+    )
+    run_group.add_argument(
+        "--tigon-partition-ratio",
+        choices=("threads", "half", "quarter"),
+        help="derive partition count per point from the thread count (default: threads)",
+    )
+    run_group.add_argument(
+        "--tigon-warmup-seconds",
+        type=int,
+        help="Tigon warmup duration (default: min(1, run-seconds - 1))",
+    )
+    run_group.add_argument("--tigon-read-write-ratio", type=int, help="YCSB read/write ratio, 0-100 (default: 80)")
+    run_group.add_argument("--tigon-read-only-ratio", type=int, help="YCSB read-only transaction ratio, 0-100 (default: 0)")
+    run_group.add_argument("--tigon-cross-ratio", type=int, help="YCSB cross-partition transaction ratio, 0-100 (default: 0)")
+    run_group.add_argument("--tigon-cross-partitions", type=int, help="YCSB cross-partition count (default: 2)")
+    run_group.add_argument("--tigon-keys", type=int, help="YCSB key count per partition (default: 200000)")
+    run_group.add_argument("--tigon-zipf", type=float, help="YCSB Zipf skew (default: 0, uniform)")
+    run_group.add_argument("--tigon-neworder-dist", type=int, help="TPC-C new-order cross-partition probability, 0-100 (default: 10)")
+    run_group.add_argument("--tigon-payment-dist", type=int, help="TPC-C payment cross-partition probability, 0-100 (default: 15)")
     run_group.add_argument(
         "--damer-root",
         default=None,
@@ -320,6 +433,16 @@ def init_args():
         help="print speedup table relative to REF_MUTEX (throughput sweep only; default exp_spin)",
     )
     graph_group.add_argument(
+        "--heatmap-ref",
+        metavar="REF_MUTEX",
+        help="heatmap reference lock (default: --speedup reference, otherwise exp_spin)",
+    )
+    graph_group.add_argument(
+        "--no-heatmap",
+        action="store_true",
+        help="omit the default relative-throughput heatmap",
+    )
+    graph_group.add_argument(
         "--stdev",
         type=float,
         default=Constants.Defaults.STANDARD_DEVIATION_SCALE,
@@ -387,6 +510,72 @@ def init_args():
     Constants.logs_folder = args.log_folder
     Constants.multithreaded = args.multithreaded
     Constants.bench = args.bench
+    is_tigon = args.bench.startswith("tigon")
+    is_tigon_tpcc = args.bench == "tigon_tpcc"
+    Constants.tigon_query = args.tigon_query or ("mixed" if is_tigon_tpcc else "rmw")
+    Constants.tigon_protocol = args.tigon_protocol or "TwoPL"
+    Constants.tigon_partitions = args.tigon_partitions
+    Constants.tigon_partition_ratio = args.tigon_partition_ratio
+    Constants.tigon_warmup_seconds = args.tigon_warmup_seconds
+    Constants.tigon_read_write_ratio = (
+        args.tigon_read_write_ratio if args.tigon_read_write_ratio is not None else 80
+    )
+    Constants.tigon_read_only_ratio = (
+        args.tigon_read_only_ratio if args.tigon_read_only_ratio is not None else 0
+    )
+    Constants.tigon_cross_ratio = args.tigon_cross_ratio if args.tigon_cross_ratio is not None else 0
+    Constants.tigon_cross_partitions = (
+        args.tigon_cross_partitions if args.tigon_cross_partitions is not None else 2
+    )
+    Constants.tigon_keys = args.tigon_keys if args.tigon_keys is not None else 200000
+    Constants.tigon_zipf = args.tigon_zipf if args.tigon_zipf is not None else 0.0
+    Constants.tigon_neworder_dist = (
+        args.tigon_neworder_dist if args.tigon_neworder_dist is not None else 10
+    )
+    Constants.tigon_payment_dist = (
+        args.tigon_payment_dist if args.tigon_payment_dist is not None else 15
+    )
+    Constants.bench_variant = ""
+    if is_tigon:
+        run_seconds = max(1, int(Constants.bench_n_seconds))
+        warmup_seconds = (
+            Constants.tigon_warmup_seconds
+            if Constants.tigon_warmup_seconds is not None
+            else min(1, run_seconds - 1)
+        )
+        partition_tag = (
+            f"ratio-{Constants.tigon_partition_ratio}"
+            if Constants.tigon_partition_ratio is not None
+            else str(Constants.tigon_partitions)
+            if Constants.tigon_partitions is not None
+            else "auto"
+        )
+        variant_parts = [
+            f"query-{Constants.tigon_query}",
+            f"protocol-{Constants.tigon_protocol}",
+            (
+                f"partition-{partition_tag}"
+                if partition_tag.startswith("ratio-")
+                else f"partitions-{partition_tag}"
+            ),
+            f"run-{run_seconds}s",
+            f"warmup-{warmup_seconds}s",
+        ]
+        if is_tigon_tpcc:
+            variant_parts.extend([
+                f"neworder-{Constants.tigon_neworder_dist}",
+                f"payment-{Constants.tigon_payment_dist}",
+            ])
+        else:
+            variant_parts.extend([
+                f"rw-{Constants.tigon_read_write_ratio}",
+                f"ro-{Constants.tigon_read_only_ratio}",
+                f"cross-{Constants.tigon_cross_ratio}",
+                f"crossparts-{Constants.tigon_cross_partitions}",
+                f"keys-{Constants.tigon_keys}",
+                f"zipf-{Constants.tigon_zipf:g}",
+            ])
+        Constants.bench_variant = "-" + "-".join(variant_parts)
     Constants.damer_root = args.damer_root
     Constants.moe_workload = args.moe_workload
     Constants.moe_experts = args.moe_experts
@@ -413,6 +602,8 @@ def init_args():
     Constants.variability = args.variability
     Constants.speedup = args.speedup is not None
     Constants.speedup_ref = args.speedup
+    Constants.heatmap_ref = args.heatmap_ref
+    Constants.no_heatmap = args.no_heatmap
     if args.plot == "faceted":
         Constants.faceted = True
     elif args.plot == "combined":

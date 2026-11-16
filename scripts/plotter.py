@@ -3,10 +3,8 @@
 QUICK CUSTOMIZATION GUIDE
 ─────────────────────────
 • Tweak FIGURE_SIZE, DPI, LINE_WIDTH, etc. in the STYLE CONFIG section below.
-• LOCK_TYPE_STYLES maps each underlying lock algorithm (cas, bl, lamport …)
-  to a (linestyle, marker) pair — gives instant visual decoding in every panel.
-• GROUP_PALETTES assigns a color family to each topology (Bitonic, Periodic,
-  Tree Elevator …).  Colors within a group are shades of the same hue.
+• SERIES_COLORS, SERIES_MARKERS and SERIES_LINESTYLES distinguish the selected
+  locks consistently across panels.
 • AUTO_FACET_THRESHOLD: when series count exceeds this, the plot is
   automatically split into grouped subplots. Override with --plot faceted/combined.
 """
@@ -15,6 +13,7 @@ import pandas as pd   # pyright: ignore[reportMissingModuleSource]
 import numpy as np    # pyright: ignore[reportMissingImports]
 import matplotlib      # pyright: ignore[reportMissingModuleSource]
 import matplotlib.pyplot as plt  # pyright: ignore[reportMissingModuleSource]
+from matplotlib.colors import LogNorm
 import seaborn as sns  # pyright: ignore[reportMissingModuleSource]
 import os
 
@@ -46,40 +45,14 @@ TIGHT_PAD            = 2.0
 # Series count above which faceted subplots are used automatically
 AUTO_FACET_THRESHOLD = 10
 
-# ── Lock type → (linestyle, marker) ───────────────────────────
-# The "lock type" is the substring after the topology prefix:
-#   bitonic_cas  →  cas     tree_bl_elevator  →  bl
-LOCK_TYPE_STYLES = {
-    'cas':      ('-',                'o'),   # solid,   circle
-    'bl':       ('--',               's'),   # dashed,  square
-    'lamport':  (':',                '^'),   # dotted,  triangle
-    'elevator': ('-.',               'D'),   # dashdot, diamond
-    'bakery':   ((0, (3, 1, 1, 1)), 'P'),   # dense dash-dot, plus
-}
-DEFAULT_LOCK_STYLE = ('-', 'X')
-NCA_LINESTYLE      = (0, (5, 2))            # long dashes for _nca variants
-
-# ── Group → color palette ─────────────────────────────────────
-# i-th member of a group draws palette[i % len(palette)].
-GROUP_PALETTES = {
-    'Baseline':        ['#2c3e50', '#7f8c8d', '#34495e', '#95a5a6', '#566573', '#aab7b8'],
-    'Linear Elevator': ['#c0392b', '#e74c3c', '#ff6b6b', '#e55039', '#eb4d4b', '#fc5c65'],
-    'Tree Elevator':   ['#2471a3', '#2e86c1', '#3498db', '#5dade2', '#85c1e9', '#0984e3'],
-    'Net Elevator':    ['#27ae60', '#2ecc71', '#58d68d', '#82e0aa'],
-    'Bitonic':         ['#8e44ad', '#9b59b6', '#af7ac5', '#c39bd3', '#d2b4de', '#7d3c98'],
-    'Periodic':        ['#d35400', '#e67e22', '#f39c12', '#f8c471', '#fad7a0', '#ca6f1e'],
-    'WF Bitonic':      ['#4a148c', '#6a1b9a', '#7b1fa2', '#8e24aa', '#9c27b0', '#ab47bc'],
-    'WF Periodic':     ['#004d40', '#00695c', '#00796b', '#00897b', '#009688', '#26a69a'],
-    'LW Bitonic':      ['#1a237e', '#283593', '#303f9f', '#3949ab', '#3f51b5', '#5c6bc0'],
-    'LW Periodic':     ['#bf360c', '#d84315', '#e64a19', '#f4511e', '#ff5722', '#ff6e40'],
-    'Seq Bitonic':     ['#33691e', '#558b2f', '#689f38', '#7cb342', '#8bc34a', '#9ccc65'],
-    'Seq Periodic':    ['#4e342e', '#5d4037', '#6d4c41', '#795548', '#8d6e63', '#a1887f'],
-}
-FALLBACK_PALETTE = [
-    '#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4',
-    '#42d4f4', '#f032e6', '#bfef45', '#fabed4', '#469990',
-    '#dcbeff', '#9A6324', '#800000', '#aaffc3', '#808000',
+SERIES_COLORS = [
+    '#0072B2', '#D55E00', '#009E73', '#CC79A7', '#E69F00',
+    '#56B4E9', '#8C564B', '#6A3D9A', '#008080', '#B22222',
+    '#3C5A14', '#E377C2', '#4D4D4D', '#BCBD22', '#1F78B4',
+    '#FF7F00', '#33A02C', '#B15928', '#A65628', '#984EA3',
 ]
+SERIES_MARKERS = ['o', 's', '^', 'D', 'P', 'v', 'X', '<', '>', 'h', '*']
+SERIES_LINESTYLES = ['-', '--', '-.', ':']
 
 
 # ════════════════════════════════════════════════════════════════
@@ -138,16 +111,12 @@ _STYLE_CACHE = {}
 def _compute_all_styles():
     """Build (color, linestyle, marker) for every mutex in Constants.mutex_names."""
     _STYLE_CACHE.clear()
-    groups = auto_group_mutexes(Constants.mutex_names)
-    for group_name, members in groups.items():
-        palette = GROUP_PALETTES.get(group_name, FALLBACK_PALETTE)
-        for i, name in enumerate(members):
-            _, lock_type, is_nca = classify_mutex(name)
-            color = palette[i % len(palette)]
-            ls, marker = LOCK_TYPE_STYLES.get(lock_type, DEFAULT_LOCK_STYLE)
-            if is_nca:
-                ls = NCA_LINESTYLE
-            _STYLE_CACHE[name] = (color, ls, marker)
+    for i, name in enumerate(dict.fromkeys(Constants.mutex_names)):
+        _STYLE_CACHE[name] = (
+            SERIES_COLORS[i % len(SERIES_COLORS)],
+            SERIES_LINESTYLES[(i // len(SERIES_COLORS)) % len(SERIES_LINESTYLES)],
+            SERIES_MARKERS[i % len(SERIES_MARKERS)],
+        )
 
 
 def get_mutex_style(mutex_name):
@@ -161,15 +130,15 @@ def get_mutex_style(mutex_name):
 #  FILE SAVING
 # ════════════════════════════════════════════════════════════════
 
-def get_savefig_filepath():
+def get_savefig_filepath(suffix=""):
     from os.path import isfile
     from datetime import datetime
 
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
     capture = getattr(Constants, "capture", "latency")
-    bench = Constants.bench
+    bench = Constants.bench + Constants.bench_variant
     alloc = (
-        "cxl-hw" if Constants.hardware_cxl
+        f"cxl-hw-node{Constants.numa_node}" if Constants.hardware_cxl
         else "cxl-sw" if Constants.software_cxl
         else "malloc"
     )
@@ -190,6 +159,7 @@ def get_savefig_filepath():
     os.makedirs(figs_dir, exist_ok=True)
     base = f"{figs_dir}/{ts}-{bench}-{capture}{sweep_part}-{run_part}-{alloc}"
 
+    base += suffix
     path = f"{base}.png"
     n = 1
     while isfile(path):
@@ -239,7 +209,7 @@ def _style_legend(ax, ncols=None):
             pass
 
 
-def display(axes=None, tight_layout=True):
+def display(axes=None, tight_layout=True, suffix=""):
     """Style legends, save figure, and (only if --show was passed) plt.show().
 
     plt.show() blocks waiting for a GUI event loop. Matplotlib reports
@@ -257,7 +227,7 @@ def display(axes=None, tight_layout=True):
         _style_legend(plt.gca())
     if tight_layout:
         plt.tight_layout(pad=TIGHT_PAD)
-    path = get_savefig_filepath()
+    path = get_savefig_filepath(suffix)
     plt.savefig(path, bbox_inches='tight', dpi=DPI)
     logger.info(f"Saved figure → {path}")
     if getattr(Constants, 'show', False):
@@ -297,11 +267,13 @@ def plot_one_cdf(series, mutex_name, *, xlabel, ylabel, title, average_lock_time
         label += f" (avg={average_lock_time:.2e})"
     label += f" ({x_values.size:,} pts)"
 
-    color, ls, _ = get_mutex_style(mutex_name)
+    color, ls, marker = get_mutex_style(mutex_name)
     if Constants.scatter:
-        plt.scatter(x, y, label=label, s=0.2, color=color)
+        plt.scatter(x, y, label=label, s=3, color=color, marker=marker)
     else:
         plt.plot(x, y, label=label, color=color, linestyle=ls,
+                 marker=marker, markevery=max(1, len(x) // 12),
+                 markersize=MARKER_SIZE * 0.7,
                  linewidth=LINE_WIDTH * 0.6, alpha=ALPHA)
 
     plt.xscale("log")
@@ -441,13 +413,13 @@ def _plot_iter_faceted(data_list):
         if group_name != 'Baseline':
             for bname, bdf in baseline_entries:
                 bagg = _aggregate_total_throughput(bdf)
-                bcolor, _, _ = get_mutex_style(bname)
+                bcolor, bls, bmarker = get_mutex_style(bname)
                 bmean = bagg.groupby(Constants.iter_variable_name)['Iterations'].mean()
                 ax.plot(
                     bmean.index, bmean.values,
                     label=f"{bname} (ref)", color=bcolor,
                     linewidth=LINE_WIDTH * 0.9, alpha=0.50,
-                    linestyle='-', zorder=1,
+                    linestyle=bls, marker=bmarker, markersize=MARKER_SIZE * 0.7, zorder=1,
                 )
             # Shade the region between min/max baselines for context
             if len(baseline_entries) >= 2:
@@ -490,6 +462,51 @@ def _plot_iter_faceted(data_list):
 
     fig.suptitle(_iter_title(), fontsize=TITLE_FONT_SIZE + 1, fontweight='bold')
     display(axes.flatten()[:n_groups])
+
+
+def _relative_throughput(data_list, ref_name):
+    """Mean per-run total iterations divided by the reference at each point."""
+    var = Constants.iter_variable_name
+    means = {
+        name: _aggregate_total_throughput(df).groupby(var)['Iterations'].mean()
+        for name, df in data_list
+    }
+    if ref_name not in means:
+        logger.warning("Heatmap reference mutex '%s' has no data; skipping heatmap", ref_name)
+        return None
+    totals = pd.DataFrame.from_dict(means, orient='index').sort_index(axis=1)
+    reference = totals.loc[ref_name]
+    return totals.where(totals >= 0).div(reference.where(reference > 0), axis='columns')
+
+
+def plot_throughput_heatmap(data, ref_name):
+    """Plot throughput ratios relative to a chosen mutex at each sweep point."""
+    _apply_style()
+    ratios = _relative_throughput(list(data), ref_name)
+    if ratios is None:
+        return
+    finite = ratios.where(np.isfinite(ratios))
+    positive = finite.where(finite > 0).stack()
+    if positive.empty:
+        logger.warning("No valid reference throughput for heatmap against '%s'", ref_name)
+        return
+    extent = max(float(positive.max()), 1 / float(positive.min()), 1.01)
+    colors = finite.clip(lower=1 / extent)
+    annotations = finite.apply(
+        lambda column: column.map(lambda value: f"{value:.2f}" if pd.notna(value) else "")
+    )
+    fig, ax = plt.subplots(figsize=(max(10, len(ratios.columns) * 0.65),
+                                    max(4, len(ratios.index) * 0.42 + 2)))
+    ax.set_facecolor('#d9d9d9')
+    sns.heatmap(colors, mask=finite.isna(), annot=annotations, fmt='',
+                cmap='RdYlGn', norm=LogNorm(vmin=1 / extent, vmax=extent),
+                linewidths=0.5, linecolor='white', ax=ax,
+                cbar_kws={'label': f'Total iterations / {ref_name} (1 = equal)'})
+    ax.set_title(f"Relative throughput vs {ref_name}\n"
+                 "Mean run totals; grey = missing or invalid reference")
+    ax.set_xlabel(Constants.iter_variable_name.replace('_', ' ').title())
+    ax.set_ylabel("Mutex")
+    display(ax, suffix="-heatmap")
 
 
 # ════════════════════════════════════════════════════════════════
@@ -590,12 +607,12 @@ def _plot_variability_faceted(data_list):
         if group_name != 'Baseline':
             for bname, bdf in baseline_entries:
                 bstats = _compute_variability(bdf)
-                bcolor, _, _ = get_mutex_style(bname)
+                bcolor, bls, bmarker = get_mutex_style(bname)
                 ax.plot(
                     bstats[var], bstats['cv'],
                     label=f"{bname} (ref)", color=bcolor,
                     linewidth=LINE_WIDTH * 0.9, alpha=0.50,
-                    linestyle='-', zorder=1,
+                    linestyle=bls, marker=bmarker, markersize=MARKER_SIZE * 0.7, zorder=1,
                 )
 
         for mutex_name, df in members:
@@ -715,8 +732,9 @@ def print_speedup_table(data):
     from datetime import datetime
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
     triplet = f"{Constants.bench_n_threads}_{Constants.bench_n_seconds}_{Constants.n_program_iterations}"
-    txt_path = f"{figs_dir}/{ts}_{triplet}-speedup.txt"
-    csv_path = f"{figs_dir}/{ts}_{triplet}-speedup.csv"
+    variant = Constants.bench_variant
+    txt_path = f"{figs_dir}/{ts}_{triplet}{variant}-speedup.txt"
+    csv_path = f"{figs_dir}/{ts}_{triplet}{variant}-speedup.csv"
 
     with open(txt_path, "w") as f:
         f.write(table_str)

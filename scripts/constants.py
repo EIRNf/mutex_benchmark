@@ -215,7 +215,7 @@ class Constants:
         # Lock list matching the requested paper comparison table.  Keep the
         # order stable so generated CSVs and plots use the same presentation.
         PAPER_SET = [
-            "bakery",
+            "bakery",            
             "boulangerie",
             "lamport",
             "linear_lamport_elevator",
@@ -227,6 +227,7 @@ class Constants:
             "spin",
             "exp_spin",
             "ticket",
+            "mcs",
             "cxl_fast_exp"
         ]
 
@@ -340,6 +341,7 @@ class Constants:
         MAX_N_POINTS         = 1000
         LOG_SCALE            = True
         STANDARD_DEVIATION_SCALE = 1.0
+        HEATMAP_REFERENCE = "exp_spin"
 
         LOW_CONTENTION = False
         STAGGER_MS     = 0
@@ -359,6 +361,7 @@ class Constants:
     max_n_points         = Defaults.MAX_N_POINTS
     log                  = Defaults.LOG
     bench: str           = Defaults.BENCH
+    bench_variant: str   = ""
     damer_root: str | None = None
     moe_workload: str | None = None
     moe_experts: int = 8
@@ -366,6 +369,19 @@ class Constants:
     moe_movement: str = "fused"
     moe_count: str = "events"
     moe_kv_scale: float = 1.0 / 64.0
+    tigon_query: str = "rmw"
+    tigon_protocol: str = "TwoPL"
+    tigon_partitions: int | None = None
+    tigon_partition_ratio: str | None = None
+    tigon_warmup_seconds: int | None = None
+    tigon_read_write_ratio: int = 80
+    tigon_read_only_ratio: int = 0
+    tigon_cross_ratio: int = 0
+    tigon_cross_partitions: int = 2
+    tigon_keys: int = 200000
+    tigon_zipf: float = 0.0
+    tigon_neworder_dist: int = 10
+    tigon_payment_dist: int = 15
     iter: bool
     rusage: bool
     software_cxl: bool
@@ -389,5 +405,7 @@ class Constants:
     variability: bool = False
     speedup: bool = False
     speedup_ref: str = 'exp_spin'
+    heatmap_ref: str | None = None
+    no_heatmap: bool = False
     capture: str = "latency"
     plot: str = "auto"

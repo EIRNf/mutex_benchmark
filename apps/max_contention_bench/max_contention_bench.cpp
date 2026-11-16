@@ -38,15 +38,13 @@ int max_contention_bench(
     SoftwareMutex* lock
 ) {
 
-#ifdef cxl
-#elif defined(hardware_cxl)
-    int numa = numa_available()+1;
+#ifdef hardware_cxl
+    int numa = 1;
 #else
     int numa = 0;
 #endif
 
-    // Set process-wide memory policy to node 2 to prevent any allocations on nodes 0 and 1
-    setup_numa_mempolicy_or_warn(numa);
+    setup_numa_mempolicy_or_fail(numa);
 
     // Create run args structure to hold thread arguments
     // struct run_args args;
@@ -158,18 +156,20 @@ int max_contention_bench(
     volatile int* last;
     volatile int* total_unfair;
 
-    // Force allocate control variables on node 2
-#ifdef __linux__
+#if defined(__linux__) && defined(hardware_cxl)
     if (numa) {
-        fprintf(stderr, "DEBUG: Allocating control variables on node 2\n");
-        counter = (volatile int*)numa_alloc_onnode(sizeof(int), 2);
-        last = (volatile int*)numa_alloc_onnode(sizeof(int), 2);
-        total_unfair = (volatile int*)numa_alloc_onnode(sizeof(int), 2);
-        fprintf(stderr, "DEBUG: Allocated counter=%p, last=%p, total_unfair=%p\n", counter, last, total_unfair);
+        counter = static_cast<volatile int*>(
+            cxl_hardware_alloc(sizeof(int), __FILE__, __LINE__)
+        );
+        last = static_cast<volatile int*>(
+            cxl_hardware_alloc(sizeof(int), __FILE__, __LINE__)
+        );
+        total_unfair = static_cast<volatile int*>(
+            cxl_hardware_alloc(sizeof(int), __FILE__, __LINE__)
+        );
     } else
 #endif
     {
-        fprintf(stderr, "DEBUG: NUMA not available, using regular allocation\n");
         counter = new int;
         last = new int;
         total_unfair = new int;
@@ -179,14 +179,17 @@ int max_contention_bench(
     *last = -1;
     *total_unfair = 0;
     
-    // Allocate flags on node 2 to avoid brk() calls
     std::atomic<bool>* start_flag_raw = nullptr;
     std::atomic<bool>* end_flag_raw = nullptr;
 
-#ifdef __linux__
+#if defined(__linux__) && defined(hardware_cxl)
     if (numa) {
-        start_flag_raw = (std::atomic<bool>*)numa_alloc_onnode(sizeof(std::atomic<bool>), 2);
-        end_flag_raw = (std::atomic<bool>*)numa_alloc_onnode(sizeof(std::atomic<bool>), 2);
+        start_flag_raw = static_cast<std::atomic<bool>*>(
+            cxl_hardware_alloc(sizeof(std::atomic<bool>), __FILE__, __LINE__)
+        );
+        end_flag_raw = static_cast<std::atomic<bool>*>(
+            cxl_hardware_alloc(sizeof(std::atomic<bool>), __FILE__, __LINE__)
+        );
         new (start_flag_raw) std::atomic<bool>(false);
         new (end_flag_raw) std::atomic<bool>(false);
     } else

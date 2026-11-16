@@ -1,4 +1,5 @@
 #include "bench_utils.hpp"
+#include "cxl_utils.hpp"
 #include "../lock/lock.hpp"
 
 #include <stdio.h>
@@ -214,10 +215,13 @@ void numa_delete(SoftwareMutex* ptr) {
 
 // NUMA-aware placement new allocator for mutex objects
 template<typename T>
-T* numa_new() {
+T* numa_new(const char *type_name) {
     void* mem = nullptr;
     size_t alloc_size = sizeof(T);
 
+#ifdef hardware_cxl
+    mem = cxl_hardware_alloc(alloc_size, type_name);
+#else
     // Use mmap directly to avoid brk() issues with NUMA
     mem = mmap(nullptr, alloc_size,
                PROT_READ | PROT_WRITE,
@@ -227,20 +231,7 @@ T* numa_new() {
     if (mem == MAP_FAILED) {
         throw std::bad_alloc();
     }
-
-    // Force bind to node 2
-    unsigned long nodemask[16] = {0};
-    unsigned long maxnode = sizeof(nodemask) * 8;
-
-    // Set bit for node 2
-    nodemask[0] = 1UL << 2;  // Node 2
-
-    // Apply BIND policy to node 2
-    if (mbind(mem, alloc_size, MPOL_BIND, nodemask, maxnode, MPOL_MF_MOVE) != 0) {
-        fprintf(stderr, "mbind to node 2 failed: %s\n", strerror(errno));
-    } else {
-        fprintf(stderr, "Successfully bound %zu bytes at %p to node 2\n", alloc_size, mem);
-     }
+#endif
 
     // Touch all pages to force allocation according to policy
     memset(mem, 0, alloc_size);
@@ -259,7 +250,7 @@ T* numa_new() {
 // everything else via new T()). The allocation strategy is now factored out
 // once via the MK() macro instead of being repeated per lock name.
 #ifdef hardware_cxl
-    #define MK(Type) []() -> SoftwareMutex* { return numa_new<Type>(); }
+    #define MK(Type) []() -> SoftwareMutex* { return numa_new<Type>(#Type); }
 #else
     #define MK(Type) []() -> SoftwareMutex* { return new Type(); }
 #endif

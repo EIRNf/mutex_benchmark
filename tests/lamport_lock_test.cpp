@@ -42,5 +42,9 @@ int main() {
     alarm(0);
     assert(completed.load(std::memory_order_relaxed) == workers.size());
     lock->destroy();
+#if defined(__linux__) && defined(hardware_cxl)
+    numa_delete(lock);
+#else
     delete lock;
+#endif
 }

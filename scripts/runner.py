@@ -5,6 +5,58 @@ from .logger    import logger
 import subprocess
 import os
 import re
+import signal
+
+
+def _format_command_output(output: bytes, *, limit: int = 80) -> str:
+    text = output.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    if not lines:
+        return "<empty>"
+    if len(lines) > limit:
+        omitted = len(lines) - limit
+        lines = [f"... {omitted} earlier lines omitted ...", *lines[-limit:]]
+    return "\n".join(lines)
+
+
+def _format_return_code(returncode: int) -> str:
+    if returncode >= 0:
+        return f"exit code {returncode}"
+    signal_number = -returncode
+    try:
+        signal_name = signal.Signals(signal_number).name
+    except ValueError:
+        signal_name = f"signal {signal_number}"
+    return f"terminated by {signal_name} ({signal_number})"
+
+
+def _is_default_tigon_workload() -> bool:
+    if not Constants.bench.startswith("tigon"):
+        return False
+    common_defaults = (
+        Constants.tigon_protocol == "TwoPL"
+        and Constants.tigon_partitions is None
+        and Constants.tigon_partition_ratio is None
+        and Constants.tigon_warmup_seconds is None
+    )
+    if Constants.bench == "tigon_tpcc":
+        return (
+            common_defaults
+            and Constants.tigon_query == "mixed"
+            and Constants.tigon_neworder_dist == 10
+            and Constants.tigon_payment_dist == 15
+        )
+    return (
+        common_defaults
+        and Constants.tigon_query == "rmw"
+        and Constants.tigon_read_write_ratio == 80
+        and Constants.tigon_read_only_ratio == 0
+        and Constants.tigon_cross_ratio == 0
+        and Constants.tigon_cross_partitions == 2
+        and Constants.tigon_keys == 200000
+        and Constants.tigon_zipf == 0.0
+    )
+
 
 def get_data_file_name(mutex_name, i, **iter_kwargs):
     """Return the CSV path for one benchmark point.
@@ -22,13 +74,36 @@ def get_data_file_name(mutex_name, i, **iter_kwargs):
     bench_tag = Constants.bench
     if Constants.bench == "damer_moe":
         bench_tag += f"-{Constants.moe_movement}-{Constants.moe_granularity}-{Constants.moe_count}"
+    elif Constants.bench.startswith("tigon"):
+        variant = Constants.bench_variant
+        if Constants.tigon_partitions is None:
+            threads = iter_kwargs.get("threads", Constants.bench_n_threads)
+            variant = variant.replace("partitions-auto", f"partitions-{threads}", 1)
+        bench_tag += variant
     name_root = (
         f"{Constants.data_folder}/"
         f"{mutex_name}-{bench_tag}-{capture}{alloc_tag}-rep{i}"
     )
     for key, value in iter_kwargs.items():
         name_root += f"-{key}={value}"
-    return name_root + ".csv"
+    data_file_name = name_root + ".csv"
+
+    if (
+        Constants.skip_experiment
+        and Constants.bench.startswith("tigon")
+        and _is_default_tigon_workload()
+        and not os.path.exists(data_file_name)
+    ):
+        legacy_root = (
+            f"{Constants.data_folder}/"
+            f"{mutex_name}-{Constants.bench}-{capture}{alloc_tag}-rep{i}"
+        )
+        for key, value in iter_kwargs.items():
+            legacy_root += f"-{key}={value}"
+        legacy_data_file_name = legacy_root + ".csv"
+        if os.path.exists(legacy_data_file_name):
+            return legacy_data_file_name
+    return data_file_name
 
 def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, critical_delay=None, noncritical_delay=None, rusage=False):
     if threads is None:
@@ -40,7 +115,19 @@ def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, criti
 
     if Constants.bench.startswith("tigon"):
         run_sec = max(1, int(Constants.bench_n_seconds))
-        warmup_sec = min(1, run_sec - 1)
+        warmup_sec = (
+            Constants.tigon_warmup_seconds
+            if Constants.tigon_warmup_seconds is not None
+            else min(1, run_sec - 1)
+        )
+        if Constants.tigon_partitions is not None:
+            partitions = Constants.tigon_partitions
+        else:
+            partition_ratio = Constants.tigon_partition_ratio or "threads"
+            ratio_denominator = {"threads": 1, "half": 2, "quarter": 4}[partition_ratio]
+            partitions = max(1, threads // ratio_denominator)
+        is_tpcc = Constants.bench == "tigon_tpcc"
+        app_name = "TPC-C" if is_tpcc else "YCSB"
         # Use with_lock.sh to inject the mutex via LD_PRELOAD
         cmd = [
             "./scripts/with_lock.sh",
@@ -52,23 +139,53 @@ def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, criti
             "--id=0",
             "--servers=127.0.0.1:1234",
             f"--threads={threads}",
-            f"--partition_num={threads}",
+            f"--partition_num={partitions}",
             f"--time_to_run={run_sec}",
             f"--time_to_warmup={warmup_sec}",
-            "--protocol=TwoPL",
+            f"--protocol={Constants.tigon_protocol}",
+            f"--query={Constants.tigon_query}",
         ]
-        if "tpcc" in Constants.bench:
+        run_details = [
+            f"lock={mutex_name}",
+            f"app={app_name}",
+            f"query={Constants.tigon_query}",
+            f"protocol={Constants.tigon_protocol}",
+            "coordinator_id=0",
+            "servers=127.0.0.1:1234",
+            f"threads={threads}",
+            f"partitions={partitions}",
+            f"run_seconds={run_sec}",
+            f"warmup_seconds={warmup_sec}",
+        ]
+        if Constants.tigon_partition_ratio is not None:
+            run_details.append(f"partition_ratio={Constants.tigon_partition_ratio}")
+        if is_tpcc:
             cmd.extend([
-                "--query=mixed",
-                "--neworder_dist=10",
-                "--payment_dist=15",
+                f"--neworder_dist={Constants.tigon_neworder_dist}",
+                f"--payment_dist={Constants.tigon_payment_dist}",
+            ])
+            run_details.extend([
+                f"neworder_dist={Constants.tigon_neworder_dist}",
+                f"payment_dist={Constants.tigon_payment_dist}",
             ])
         else:
             cmd.extend([
-                "--query=rmw",
-                "--read_write_ratio=80",
-                "--keys=200000",
+                f"--read_write_ratio={Constants.tigon_read_write_ratio}",
+                f"--read_only_ratio={Constants.tigon_read_only_ratio}",
+                f"--cross_ratio={Constants.tigon_cross_ratio}",
+                f"--cross_part_num={Constants.tigon_cross_partitions}",
+                f"--keys={Constants.tigon_keys}",
+                f"--zipf={Constants.tigon_zipf:g}",
             ])
+            run_details.extend([
+                f"read_write_ratio={Constants.tigon_read_write_ratio}",
+                f"read_only_ratio={Constants.tigon_read_only_ratio}",
+                f"cross_ratio={Constants.tigon_cross_ratio}",
+                f"cross_partitions={Constants.tigon_cross_partitions}",
+                f"keys_per_partition={Constants.tigon_keys}",
+                f"zipf={Constants.tigon_zipf:g}",
+            ])
+        logger.info("Tigon run configuration: %s", " ".join(run_details))
         logger.debug(f"Bench command: {cmd}")
         return cmd
 
@@ -184,8 +301,14 @@ def _run_command_to_csv(command, timeout_s: float, threads: int = 1, seconds: fl
             if line.startswith("PLACEMENT "):
                 logger.info(line)
     if result.returncode != 0:
-        stderr = result.stderr.decode("utf-8", errors="replace")
-        raise RuntimeError(f"Benchmark command failed: {command}\n{stderr}")
+        stdout = _format_command_output(result.stdout)
+        stderr = _format_command_output(result.stderr)
+        status = _format_return_code(result.returncode)
+        raise RuntimeError(
+            f"Benchmark command failed ({status}): {command}\n"
+            f"--- stdout ---\n{stdout}\n"
+            f"--- stderr ---\n{stderr}"
+        )
 
     if Constants.bench.startswith("tigon"):
         return _parse_tigon_output_to_csv(result.stdout, result.stderr, threads, seconds)
@@ -195,10 +318,19 @@ def _run_command_to_csv(command, timeout_s: float, threads: int = 1, seconds: fl
 def _bench_timeout() -> float:
     """Return a generous per-run timeout in seconds.
 
-    The benchmark is expected to finish in bench_n_seconds; we allow
-    10× that plus a 15-second fixed overhead (for startup / teardown).
+    Allow 10× the configured run duration (plus Tigon warmup) and a 15-second
+    fixed overhead for startup and teardown.
     """
-    return max(30.0, Constants.bench_n_seconds * 10 + 15)
+    expected_seconds = Constants.bench_n_seconds
+    if Constants.bench.startswith("tigon"):
+        run_sec = max(1, int(Constants.bench_n_seconds))
+        warmup_sec = (
+            Constants.tigon_warmup_seconds
+            if Constants.tigon_warmup_seconds is not None
+            else min(1, run_sec - 1)
+        )
+        expected_seconds = run_sec + warmup_sec
+    return max(30.0, expected_seconds * 10 + 15)
 
 
 def run_experiment_lock_level_single_threaded():

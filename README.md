@@ -59,8 +59,21 @@ python3 -m scripts.main 8 5 3 \
   --capture throughput \
   --sweep threads 1 8 1 \
   -s hardware_cxl \
-  --alloc cxl-hardware
+  --alloc cxl-hardware \
+  --numa-node 1
 ```
+
+`--numa-node N` is required for hardware-CXL runs. Choose a memory-bearing
+NUMA node that is allowed to the process and is backed by the CXL device on
+your host; the runner and benchmark validate that the node exists, has memory,
+and is allowed, but do not infer which memory technology backs it. The selected
+node is included in CSV and figure names.
+
+For allocation placement diagnostics, set `MUTEX_BENCH_PLACEMENT=1` on the
+benchmark command. Hardware-CXL allocations then fault one byte per page and
+query `move_pages()` to report the observed node counts by allocation site.
+This intentionally changes allocation work and is for placement checks, not
+performance measurements.
 
 `cxl_fast_exp` is the CXL-resident exclusive lock adapted from the supplied
 fast-exp bridge. It is included in `hardware_cxl`; select it directly with
@@ -71,7 +84,8 @@ python3 -m scripts.main 8 5 3 \
   --capture throughput \
   --sweep threads 1 8 1 \
   -i cxl_fast_exp \
-  --alloc cxl-hardware
+  --alloc cxl-hardware \
+  --numa-node 1
 ```
 
 **Re-plot from existing CSVs (no re-run):**
@@ -112,10 +126,48 @@ scope automatically so allocator and logging-library mutexes remain untouched.
 ```bash
 python3 -m scripts.main 8 5 3 \
   --bench tigon_ycsb \
+  --tigon-query rmw \
+  --tigon-protocol TwoPL \
+  --tigon-read-write-ratio 80 \
+  --tigon-keys 200000 \
   --capture throughput \
   --sweep threads 1 8 1 \
   -s champions
 ```
+
+The query is now explicit/configurable for each Tigon run. `--bench tigon` is
+an alias for `--bench tigon_ycsb`. YCSB accepts `rmw`, `mixed`, `scan`,
+`insert`, and `delete`; TPC-C accepts `mixed`, `first_two`, `neworder`,
+`payment`, and `test`. If omitted, the existing defaults are preserved:
+YCSB `rmw`, TPC-C `mixed`, and protocol `TwoPL`.
+The default YCSB RMW mix has a read/write ratio of 80, meaning 80% reads and
+20% updates among generated operations (with a 0% read-only-transaction ratio).
+
+Tigon's workload settings can be changed with `--tigon-*` options. Common
+options are `--tigon-partitions N` for a fixed partition count or
+`--tigon-partition-ratio {threads,half,quarter}` to derive partitions from
+each swept thread count (otherwise partitions track the thread count), and
+`--tigon-warmup-seconds N` (otherwise `min(1, run-seconds - 1)`).
+YCSB also supports `--tigon-read-write-ratio`, `--tigon-read-only-ratio`,
+`--tigon-cross-ratio`, `--tigon-cross-partitions`, `--tigon-keys`, and
+`--tigon-zipf`. TPC-C supports `--tigon-neworder-dist` and
+`--tigon-payment-dist`. Values and defaults are shown by `--help`.
+
+For example, to run the TPC-C new-order-only workload:
+```bash
+python3 -m scripts.main 8 5 3 \
+  --bench tigon_tpcc \
+  --tigon-query neworder \
+  --capture throughput \
+  --sweep threads 1 8 1 \
+  -s champions
+```
+
+Every invocation logs its effective workload configuration (including lock,
+query, protocol, thread/partition counts, run/warmup duration, and the
+workload-specific parameters). The same settings are included in each raw CSV
+filename and in the generated figure names, so runs with different Tigon
+workloads remain identifiable when using a shared data folder.
 
 The paper comparison lock list is available as `-s paper`:
 `bakery`, `boulangerie`, `lamport`, the four linear/tree elevator variants,
@@ -169,6 +221,70 @@ Use `--skip 4` for a faster 4, 8, ..., 64-thread sweep.
 The legacy `run_dram_baseline.sh` and `run_cxl_baseline.sh` commands remain
 as compatibility wrappers around this unified runner.
 
+**Master benchmark matrix (`start.sh`):**
+```bash
+THREAD_START=1 MAX_THREADS=64 THREAD_INTERVAL=4 \
+RUN_TIME=10 RUNS=1 \
+./start.sh
+```
+Without `CXL_LATENCY_PCI`, the script runs CXL at the host's current latency
+setting and does not access or modify PCI configuration. To additionally test
+both adjusted latency values, provide the verified PCI BDF:
+```bash
+export CXL_LATENCY_PCI=<verified-cxl-latency-control-bdf>
+THREAD_START=1 MAX_THREADS=64 THREAD_INTERVAL=4 RUN_TIME=10 RUNS=1 ./start.sh
+```
+The script runs max/min on the DRAM node and the selected CXL mode(s); it also
+runs Tigon YCSB and TPC-C for each mode. For each Tigon workload it compares
+partitions equal to the swept thread count N, `max(1, floor(N/2))`, and
+`max(1, floor(N/4))`. The defaults are the existing YCSB RMW and TPC-C mixed
+workloads with TwoPL.
+All runs use `numactl --membind` on the selected node; Tigon uses
+`--alloc malloc` with `CXLALLOC_BACKEND=mmap`, not the separate
+`--alloc cxl-hardware` allocator.
+
+Run settings are environment-overridable variables at the top of `start.sh`,
+including `THREAD_START`, `MAX_THREADS`, `THREAD_INTERVAL`, `RUN_TIME`,
+`RUNS`, `DRAM_NODE`, `CXL_NODE`, `LOCK_SET`, and `TIGON_LOCKS`. Set
+`RUN_NATIVE=0`, `RUN_TIGON=0`, `RUN_DRAM=0`, `RUN_CXL_UNMODIFIED=0`,
+`RUN_CXL_LOW=0`, or `RUN_CXL_HIGH=0` to omit a suite or mode. With no
+`CXL_LATENCY_PCI`, the unmodified CXL mode is enabled by default and the
+adjusted modes are disabled. Supplying the BDF enables the two adjusted modes
+by default; the `RUN_CXL_*` variables can override these defaults. Tigon
+query, protocol, key count, ratios, and `TIGON_PARTITION_MODES` can also be
+overridden.
+Pass `--lock-set NAME` to select one of the named sets in
+`scripts/constants.py` for both native and Tigon runs; for example:
+```bash
+./start.sh --lock-set champions
+./start.sh --list-runs --lock-set hardware_cxl
+```
+This option overrides both `LOCK_SET` and `TIGON_LOCKS`. Without it, native
+runs use `LOCK_SET` and Tigon uses its default `exp_spin,ticket,mcs,cxl_fast_exp`
+list (which passed the two-instance preload probe), or the comma-separated
+`TIGON_LOCKS` override.
+
+Each benchmark invocation gets a separate timestamped directory under
+`data/master_runs/<application>/<memory-mode>/...`, containing raw CSVs,
+figures, logs, and `run_config.txt`. `DRY_RUN=1 ./start.sh` prints the planned
+commands and creates the run manifests without launching benchmarks or
+writing PCI configuration. To list the entire configured matrix and get a
+count and timed-workload duration estimate without creating directories or
+checking runtime NUMA/PCI prerequisites, use:
+```bash
+THREAD_START=1 MAX_THREADS=64 THREAD_INTERVAL=4 RUN_TIME=10 RUNS=1 \
+./start.sh --list-runs
+```
+The listing shows each timestamped output group, its lock/thread/repetition
+matrix, Tigon workload and effective partition counts, plus the total number
+of benchmark process launches. The duration estimate includes `RUN_TIME` for
+each launch and Tigon warmup, but excludes build, startup, plotting, and other
+overhead. When adjusted CXL modes are enabled, the script
+requires `CXL_LATENCY_PCI`, reads and saves the original register, verifies
+each write, and restores the original value on exit. The register write
+changes platform PCI configuration; confirm the BDF and offset for the host
+before enabling those modes.
+
 **Lock-level latency CDF (no sweep):**
 ```bash
 python3 -m scripts.main 4 1 5 \
@@ -187,6 +303,18 @@ python3 -m scripts.main 8 5 3 \
   --speedup exp_spin \
   --variability
 ```
+
+Throughput sweeps save both a line graph and a relative-throughput heatmap.
+Each heatmap cell is the mean total iterations per run for that lock divided
+by the reference lock's mean at the same sweep value, matching the line graph
+and speedup table. Values above 1 are faster; grey cells indicate missing
+data or a zero reference. The default reference is `exp_spin`; if it is not
+selected, the first lock with data is used with a warning. Use
+`--heatmap-ref ticket` to choose another selected lock, or `--speedup ticket`
+to use the same reference for both the table and heatmap. If an explicitly
+chosen reference has no data, the heatmap is skipped with a warning.
+Use `--no-heatmap` to save only the line graph, or `--plot none` to disable
+plots. Latency and rusage captures do not generate heatmaps.
 
 **Sweep critical-section delay (single thread count):**
 ```bash
@@ -217,6 +345,35 @@ python3 -m scripts.main 8 1 5 \
 | `--low-contention --stagger-ms N` | `--stagger-ms N` | implies staggered start |
 | `-a` / `--all` | (removed; default is champions set) | |
 | `--info/--warning/--error/--critical` | `-l INFO/WARNING/ERROR/CRITICAL` | |
+
+## Damer MoE KV-cache movement (`--bench damer_moe`)
+
+Measures lock throughput on a mixture-of-experts workload whose KV-cache
+movements come from [Damer](../Damer). `scripts/damer_moe_plan.py` compiles each
+event of Damer's `examples/workloads/moe_alltoall_workload.json` (verifier must
+pass) and exports a movement plan (bytes, fragments, fanout, priority,
+output ratio). `apps/damer_moe_bench` then has every thread pick an event
+(weighted by priority) and move an expert's KV slot while holding the mutex
+under test. The per-thread CSV is `thread,seconds,count`.
+
+```bash
+python3 -m scripts.main 8 5 3 \
+  --bench damer_moe --capture throughput --sweep threads 1 8 1 \
+  -s champions --moe-movement fused --moe-granularity expert
+```
+
+| Flag | Meaning |
+|---|---|
+| `--damer-root`, `--moe-workload` | Damer checkout (default `../Damer`) and workload JSON |
+| `--moe-experts N` | number of expert KV slots (one lock each) |
+| `--moe-granularity expert\|global` | per-expert locks or a single lock |
+| `--moe-movement fused\|staged` | Damer single-pass movement vs separate copy/transform/writeback baseline |
+| `--moe-count events\|tokens` | throughput unit (tokens = bytes / 8 KiB) |
+| `--moe-kv-scale F` | scale applied to Damer byte sizes (default 1/64) |
+
+Movement is real host-memory copying (NUMA/CXL placement follows `--alloc`);
+Damer's modeled data-movement speedup is printed by the exporter for reference
+only and is not a measurement.
 
 ## Performance Measurement (single-lock, no Python pipeline)
 

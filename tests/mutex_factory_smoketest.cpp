@@ -140,7 +140,11 @@ static int exercise_one_unsafe(const char *mutex_name) {
     lock->lock(0);
     lock->unlock(0);
     lock->destroy();
+#if defined(__linux__) && defined(hardware_cxl)
+    numa_delete(lock);
+#else
     delete lock;
+#endif
 
     printf("OK    %-30s name()=\"%s\"\n", mutex_name, reported_name.c_str());
     return 0;

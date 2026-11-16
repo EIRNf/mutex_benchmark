@@ -1,8 +1,8 @@
 from .runner import run_experiment_iter_single_threaded, run_experiment_lock_level_single_threaded
 from .dataloader import load_data_iter, load_data_lock_level, debug_print_averages_lock_level
-from .plotter import plot_lock_level, plot_iter, plot_iter_rusage, plot_variability, print_speedup_table
+from .plotter import plot_lock_level, plot_iter, plot_iter_rusage, plot_variability, plot_throughput_heatmap, print_speedup_table
 from .builder import setup, build
-from .logger import init_logger
+from .logger import init_logger, logger
 from .args import init_args
 from .constants import Constants
 
@@ -19,13 +19,20 @@ def run_experiment_iter():
     if not Constants.skip_experiment:
         run_experiment_iter_single_threaded()
     if not Constants.skip_plotting:
-        data = load_data_iter()
+        data = list(load_data_iter())
         if Constants.rusage:
             plot_iter_rusage(data)
         else:
             plot_iter(data)
+            if not Constants.no_heatmap:
+                ref = Constants.heatmap_ref or Constants.speedup_ref
+                if ref is None:
+                    ref = Constants.Defaults.HEATMAP_REFERENCE
+                    if ref not in Constants.mutex_names and data:
+                        ref = data[0][0]
+                        logger.warning("Default heatmap reference is not selected; using '%s'", ref)
+                plot_throughput_heatmap(data, ref)
         if getattr(Constants, 'variability', False):
-            data = load_data_iter()
             plot_variability(data)
     if getattr(Constants, 'speedup', False):
         data = load_data_iter()

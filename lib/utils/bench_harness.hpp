@@ -5,12 +5,10 @@
 
 #include "../lock/lock.hpp"
 
-// Binds the process-wide NUMA memory policy to node 2 (best-effort, warns to
-// stderr on failure). No-op unless `numa` is non-zero and the build targets
-// Linux. Extracted from max_contention_bench.cpp, where it was previously
-// the only caller; min_/grouped_contention_bench never called this and
-// still don't, to avoid changing their behavior.
-void setup_numa_mempolicy_or_warn(int numa);
+// Binds the process-wide memory policy to MUTEX_BENCH_NUMA_NODE. Fails
+// explicitly if the target is invalid or the policy cannot be applied.
+// No-op unless `numa` is non-zero in a Linux hardware-CXL build.
+void setup_numa_mempolicy_or_fail(int numa);
 
 // Runs lock->destroy() and frees the lock object: routes through
 // numa_delete() when `numa` is non-zero (matching the NUMA-aware allocation

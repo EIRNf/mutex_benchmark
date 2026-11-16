@@ -1,5 +1,6 @@
 #include "bench_harness.hpp"
 #include "bench_utils.hpp"
+#include "cxl_utils.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -10,19 +11,18 @@
 #include <numaif.h>
 #endif
 
-void setup_numa_mempolicy_or_warn(int numa) {
-#ifdef __linux__
+void setup_numa_mempolicy_or_fail(int numa) {
+#if defined(__linux__) && defined(hardware_cxl)
     if (numa) {
-        unsigned long nodemask[16] = {0};
-        nodemask[0] = 1UL << 2;  // Node 2
-        unsigned long maxnode = sizeof(nodemask) * 8;
-
-        // Set memory policy for entire process
-        if (set_mempolicy(MPOL_BIND, nodemask, maxnode) != 0) {
-            fprintf(stderr, "WARNING: Failed to set memory policy to node 2: %s\n", strerror(errno));
-        } else {
-            fprintf(stderr, "Successfully set process memory policy to node 2\n");
+        const int node = cxl_hardware_target_node();
+        struct bitmask *mask = cxl_hardware_node_mask(node);
+        if (set_mempolicy(MPOL_BIND, mask->maskp, mask->size) != 0) {
+            const int error_code = errno;
+            numa_bitmask_free(mask);
+            cxl_hardware_fail("set_mempolicy for hardware-CXL target failed", error_code);
         }
+        numa_bitmask_free(mask);
+        fprintf(stderr, "Bound process memory policy to hardware-CXL NUMA node %d\n", node);
     }
 #else
     (void)numa;

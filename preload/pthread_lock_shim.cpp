@@ -626,7 +626,11 @@ void release_claim(pthread_mutex_t* m, ShimMutex* sm) {
         __atomic_store_n(&h->magic, 0, __ATOMIC_RELEASE);
         if (sm->impl != nullptr) {
             sm->impl->destroy();
+#if defined(__linux__) && defined(hardware_cxl)
+            numa_delete(sm->impl);
+#else
             delete sm->impl;
+#endif
             sm->impl = nullptr;
         }
     }
