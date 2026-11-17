@@ -331,7 +331,6 @@ class Constants:
         DATA_FOLDER          = "./data/generated"
         LOGS_FOLDER          = "./data/logs"
         EXECUTABLE           = BENCH_EXECUTABLES["max"]
-        MULTITHREADED        = False
         THREAD_LEVEL         = False
         SCATTER              = False
         LOG                  = logging.INFO
@@ -353,7 +352,6 @@ class Constants:
     logs_folder          = Defaults.LOGS_FOLDER
     log_scale            = Defaults.LOG_SCALE
     executable           = Defaults.EXECUTABLE
-    multithreaded        = Defaults.MULTITHREADED
     thread_level         = Defaults.THREAD_LEVEL
     scatter              = Defaults.SCATTER
     max_n_points         = Defaults.MAX_N_POINTS
@@ -375,7 +373,9 @@ class Constants:
     tigon_payment_dist: int = 15
     iter: bool
     rusage: bool
-    hardware_cxl: bool
+    experiment_name: str = ""
+    placement: str = "none"   # none | process | locks (see scripts/config.py)
+    hardware_cxl: bool = False  # placement == "locks": -Dhardware_cxl build
     numa_node: int | None = None
     skip_plotting: bool
     show: bool = False

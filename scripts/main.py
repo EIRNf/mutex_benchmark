@@ -38,12 +38,13 @@ def run_experiment_iter():
         data = load_data_iter()
         print_speedup_table(data)
 
-def main():
-    setup()
-    init_args()
+def run_configured():
+    """Build (unless reusing data), then run and plot the experiment in Constants."""
     if not Constants.skip_experiment:
         build()
     init_logger()
+    if Constants.experiment_name:
+        logger.info("Experiment: %s", Constants.experiment_name)
 
     if Constants.capture == "latency" and Constants.iter:
         # Capture-only mode: run sweep and write CSVs without plotting.
@@ -55,6 +56,12 @@ def main():
         run_experiment_iter()
     else:
         raise NotImplementedError(f"Capture mode '{Constants.capture}' not recognized")
+
+
+def main():
+    setup()
+    init_args()
+    run_configured()
 
 
 if __name__ == "__main__":

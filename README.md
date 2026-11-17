@@ -7,15 +7,66 @@ Benchmarking different mutex libraries and implementations
 Install the Boost library [here](https://www.boost.org/doc/libs/1_53_0/doc/html/bbv2/installation.html).
 Install nsync [here](https://github.com/google/nsync).
 
-Install `pandas` and `matplotlib` for Python:
+The Python driver needs Python 3.11 or newer (experiment configs are TOML,
+read with the standard-library `tomllib`):
 
-```python
-pip install matplotlib pandas
+```bash
+python3 -m pip install -r requirements.txt
 ```
 
 ## Experiment Running
 
-The CLI is organised into four domain groups. Every group has a primary enum
+### Config files (`python -m scripts run`)
+
+An experiment is one TOML file: the benchmark, the locks, an optional sweep,
+the memory placement, and how to plot. Examples live in `experiments/`.
+
+```bash
+python3 -m scripts run experiments/max_threads.toml
+python3 -m scripts run experiments/max_threads.toml -o seconds=10 -o sweep.stop=64
+python3 -m scripts run -o capture=throughput -o locks.include=spin,mcs \
+  -o sweep.var=threads -o sweep.start=1 -o sweep.stop=8 -o sweep.step=1   # no file
+python3 -m scripts run experiments/max_threads.toml --print-config        # check, don't run
+```
+
+`-o KEY=VALUE` sets any setting by its dotted key and wins over the file.
+Values are read as TOML (`-o plot.show=true`, `-o seconds=2.5`); bare words are
+strings, and list settings accept commas (`-o locks.include=spin,mcs`). Unknown
+keys are rejected with the closest match. `--print-config` prints the fully
+resolved config, which is also a good starting point for a new file.
+
+| Key | Meaning (default) |
+|---|---|
+| `name` | experiment name (file name) |
+| `bench` | `max`, `min`, `grouped`, `tigon`, `tigon_ycsb`, `tigon_tpcc` (`max`) |
+| `capture` | `latency`, `throughput`, `rusage` (`latency`) |
+| `threads`, `seconds`, `repetitions` | fixed thread count, seconds per run, runs per point (10, 1, 10) |
+| `[locks]` `sets`, `include`, `exclude` | lock selection, as `-s/-i/-x` (champions set) |
+| `[sweep]` `var`, `start`, `stop`, `step` | inclusive sweep of `threads`, `critical_delay` or `noncritical_delay` |
+| `[memory]` `placement`, `node` | see below (`none`) |
+| `[workload]` `groups`, `critical_delay`, `noncritical_delay`, `stagger_ms` | per-benchmark knobs |
+| `[tigon]` `query`, `protocol`, `partitions`, `partition_ratio`, `warmup_seconds`, `read_write_ratio`, `read_only_ratio`, `cross_ratio`, `cross_partitions`, `keys`, `zipf`, `neworder_dist`, `payment_dist` | Tigon workload (Tigon benches only) |
+| `[plot]` `layout`, `show`, `scatter`, `max_points`, `variability`, `speedup`, `heatmap`, `heatmap_ref`, `stdev`, `averages` | plotting |
+| `[output]` `data_folder`, `log_folder`, `reuse_data`, `log_level` | where results go; paths are relative to the repo root |
+
+**Memory placement** (`[memory]`, or `--placement`/`--numa-node` on the flag CLI):
+
+| `placement` | What lands on `node` | How |
+|---|---|---|
+| `none` | nothing pinned | plain build, OS default policy |
+| `process` | everything the benchmark allocates: lock state, thread stacks, benchmark and Tigon data | each benchmark runs under `numactl --membind=node` |
+| `locks` | lock memory | `-Dhardware_cxl` build; lock objects and `ALLOCATE`d regions are `mbind()`-placed via `MUTEX_BENCH_NUMA_NODE` |
+
+Caveat for `locks`: `max_contention_bench` currently also binds its whole
+process to the node when the benchmark starts (`set_mempolicy`), so for `max`
+it behaves close to `process`; `min` and `grouped` place only lock memory, and
+locks that allocate internally without `ALLOCATE` are not placed. CSV and
+figure names carry `cxl-hw-nodeN` (`locks`) or `membind-nodeN` (`process`).
+
+### Flag CLI (`python -m scripts.main`)
+
+The flag CLI builds the same config and runs the same validation. It is
+organised into four domain groups. Every group has a primary enum
 selector; domain-specific flags only apply within their context.
 
 | Group | Primary selector | Controls |
@@ -23,7 +74,7 @@ selector; domain-specific flags only apply within their context.
 | **run** | `--bench {max,min,grouped,tigon,tigon_ycsb,tigon_tpcc}` | which binary/application executes |
 | **capture** | `--capture {latency,throughput,rusage}` | what is measured |
 | **graph** | `--plot {auto,faceted,combined,none}` | how results are shown |
-| **selection** | `-s/-i/-x`, `--alloc` | which locks, which allocator |
+| **selection** | `-s/-i/-x`, `--placement` | which locks, where memory goes |
 
 Use `--sweep VAR START STOP STEP` to iterate a variable (`threads`,
 `critical-delay`, `noncritical-delay`) over an inclusive range.
@@ -58,11 +109,11 @@ python3 -m scripts.main 8 5 3 \
   --capture throughput \
   --sweep threads 1 8 1 \
   -s hardware_cxl \
-  --alloc cxl-hardware \
+  --placement locks \
   --numa-node 1
 ```
 
-`--numa-node N` is required for hardware-CXL runs. Choose a memory-bearing
+`--numa-node N` is required with `--placement locks` or `process`. Choose a memory-bearing
 NUMA node that is allowed to the process and is backed by the CXL device on
 your host; the runner and benchmark validate that the node exists, has memory,
 and is allowed, but do not infer which memory technology backs it. The selected
@@ -83,7 +134,7 @@ python3 -m scripts.main 8 5 3 \
   --capture throughput \
   --sweep threads 1 8 1 \
   -i cxl_fast_exp \
-  --alloc cxl-hardware \
+  --placement locks \
   --numa-node 1
 ```
 
@@ -238,9 +289,9 @@ runs Tigon YCSB and TPC-C for each mode. For each Tigon workload it compares
 partitions equal to the swept thread count N, `max(1, floor(N/2))`, and
 `max(1, floor(N/4))`. The defaults are the existing YCSB RMW and TPC-C mixed
 workloads with TwoPL.
-All runs use `numactl --membind` on the selected node; Tigon uses
-`--alloc malloc` with `CXLALLOC_BACKEND=mmap`, not the separate
-`--alloc cxl-hardware` allocator.
+All runs use `numactl --membind` on the selected node around the whole Python
+process (equivalent to `placement = "process"`); Tigon uses
+`CXLALLOC_BACKEND=mmap`, not `placement = "locks"`.
 
 Run settings are environment-overridable variables at the top of `start.sh`,
 including `THREAD_START`, `MAX_THREADS`, `THREAD_INTERVAL`, `RUN_TIME`,
@@ -340,7 +391,9 @@ python3 -m scripts.main 8 1 5 \
 | `--skip-plotting` | `--plot none` | |
 | `--skip-experiment` | `--reuse-data` | |
 | `--scxl` | (removed; emucxl software-CXL allocator dropped) | |
-| `--hcxl` | `--alloc cxl-hardware` | |
+| `--hcxl` | `--placement locks --numa-node N` | |
+| `--alloc cxl-hardware` | `--placement locks` | `--alloc` still accepted as an alias |
+| `-m` / `--multithreaded` | (removed; it had no effect) | |
 | `--low-contention --stagger-ms N` | `--stagger-ms N` | implies staggered start |
 | `-a` / `--all` | (removed; default is champions set) | |
 | `--info/--warning/--error/--critical` | `-l INFO/WARNING/ERROR/CRITICAL` | |

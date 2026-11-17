@@ -22,6 +22,7 @@ from collections import OrderedDict
 
 from .constants import Constants
 from .logger import logger
+from .runner import placement_tag
 
 
 # ════════════════════════════════════════════════════════════════
@@ -137,10 +138,7 @@ def get_savefig_filepath(suffix=""):
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
     capture = getattr(Constants, "capture", "latency")
     bench = Constants.bench + Constants.bench_variant
-    alloc = (
-        f"cxl-hw-node{Constants.numa_node}" if Constants.hardware_cxl
-        else "malloc"
-    )
+    alloc = placement_tag() or "malloc"
 
     sweep_part = ""
     if Constants.iter:

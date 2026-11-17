@@ -1,0 +1,26 @@
+# Tigon YCSB read-modify-write throughput with locks injected via LD_PRELOAD.
+# Linux x86_64 only; see the README's Tigon setup section.
+#   python -m scripts run experiments/tigon_ycsb.toml -o tigon.partition_ratio=half
+
+bench       = "tigon_ycsb"
+capture     = "throughput"
+seconds     = 10
+repetitions = 3
+
+[locks]
+include = ["exp_spin", "ticket", "mcs", "cxl_fast_exp"]
+
+[sweep]
+var   = "threads"
+start = 4
+stop  = 32
+step  = 4
+
+[tigon]
+query           = "rmw"
+protocol        = "TwoPL"
+partition_ratio = "threads"
+zipf            = 0.0
+
+[plot]
+layout = "faceted"

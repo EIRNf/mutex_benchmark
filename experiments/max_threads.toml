@@ -1,0 +1,21 @@
+# Throughput of the paper lock set on max_contention_bench as threads grow.
+#   python -m scripts run experiments/max_threads.toml
+#   python -m scripts run experiments/max_threads.toml -o sweep.stop=64 -o seconds=10
+#   python -m scripts run experiments/max_threads.toml -o memory.placement=process -o memory.node=1
+
+bench       = "max"
+capture     = "throughput"
+seconds     = 5
+repetitions = 3
+
+[locks]
+sets = ["paper"]
+
+[sweep]
+var   = "threads"
+start = 1
+stop  = 16
+step  = 1
+
+[plot]
+layout = "faceted"

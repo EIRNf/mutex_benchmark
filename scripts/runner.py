@@ -58,6 +58,23 @@ def _is_default_tigon_workload() -> bool:
     )
 
 
+def placement_tag() -> str:
+    """Name fragment recording memory placement ('' when there is none)."""
+    placement = getattr(Constants, "placement", "none")
+    if placement == "locks":
+        return f"cxl-hw-node{Constants.numa_node}"
+    if placement == "process":
+        return f"membind-node{Constants.numa_node}"
+    return ""
+
+
+def _placement_prefix() -> list[str]:
+    """Command prefix for whole-process placement."""
+    if getattr(Constants, "placement", "none") == "process":
+        return ["numactl", f"--membind={Constants.numa_node}"]
+    return []
+
+
 def get_data_file_name(mutex_name, i, **iter_kwargs):
     """Return the CSV path for one benchmark point.
 
@@ -65,9 +82,9 @@ def get_data_file_name(mutex_name, i, **iter_kwargs):
     not the rusage flag; that is encoded in the capture segment instead.
     """
     capture = getattr(Constants, "capture", "latency")
-    alloc_tag = ""
-    if Constants.hardware_cxl:
-        alloc_tag = f"-cxl-hw-node{Constants.numa_node}"
+    alloc_tag = placement_tag()
+    if alloc_tag:
+        alloc_tag = "-" + alloc_tag
 
     bench_tag = Constants.bench
     if Constants.bench.startswith("tigon"):
@@ -181,6 +198,9 @@ def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, criti
                 f"keys_per_partition={Constants.tigon_keys}",
                 f"zipf={Constants.tigon_zipf:g}",
             ])
+        if Constants.placement != "none":
+            run_details.append(f"placement={Constants.placement}:node{Constants.numa_node}")
+        cmd = _placement_prefix() + cmd
         logger.info("Tigon run configuration: %s", " ".join(run_details))
         logger.debug(f"Bench command: {cmd}")
         return cmd
@@ -218,6 +238,7 @@ def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, criti
         if Constants.stagger_ms and Constants.stagger_ms > 0:
             cmd += ["--stagger-ms", str(Constants.stagger_ms)]
 
+    cmd = _placement_prefix() + cmd
     logger.debug(f"Bench command: {cmd}")
     return cmd
 
