@@ -68,8 +68,6 @@ def get_data_file_name(mutex_name, i, **iter_kwargs):
     alloc_tag = ""
     if Constants.hardware_cxl:
         alloc_tag = f"-cxl-hw-node{Constants.numa_node}"
-    elif Constants.software_cxl:
-        alloc_tag = "-cxl-sw"
 
     bench_tag = Constants.bench
     if Constants.bench.startswith("tigon"):
@@ -193,8 +191,6 @@ def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, criti
         str(threads), 
         str(Constants.bench_n_seconds), 
     ]
-    if Constants.software_cxl:
-        cmd.insert(0, "sudo")
     if Constants.groups:
         cmd.append(str(Constants.groups))
 

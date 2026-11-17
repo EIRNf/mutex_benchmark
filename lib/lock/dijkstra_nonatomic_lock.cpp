@@ -1,5 +1,4 @@
 #include "../utils/cxl_utils.hpp"
-#include "../utils/emucxl_lib.h"
 #include "../utils/region_layout.hpp"
 
 #include "lock.hpp"

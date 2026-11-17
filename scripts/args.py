@@ -413,7 +413,7 @@ def init_args():
     selection_group.add_argument("-x", "--exclude", nargs="+", default=[], help="exclude these mutex names")
     selection_group.add_argument(
         "--alloc",
-        choices=("malloc", "cxl-software", "cxl-hardware"),
+        choices=("malloc", "cxl-hardware"),
         default="malloc",
         help="allocation mode for benchmark build/runtime",
     )
@@ -561,7 +561,6 @@ def init_args():
     else:
         Constants.faceted = None
 
-    Constants.software_cxl = args.alloc == "cxl-software"
     Constants.hardware_cxl = args.alloc == "cxl-hardware"
     Constants.numa_node = args.numa_node
 

@@ -390,8 +390,6 @@ int main(int argc, char* argv[]) {
     int max_critical_delay    = args.critical_delay > 0    ? args.critical_delay    : 1;
     int max_noncritical_delay = args.noncritical_delay > 0 ? args.noncritical_delay : 1;
 
-    cxl_mutex_benchmark_init();
-
     SoftwareMutex *lock = get_mutex(args.mutex_name.c_str(), args.num_threads);
     if (lock == nullptr) {
         fprintf(stderr, "Failed to initialize lock.\n");
@@ -411,8 +409,6 @@ int main(int argc, char* argv[]) {
         args.stagger_ms,
         lock
     );
-
-    cxl_mutex_benchmark_exit();
 
     return result;
 }

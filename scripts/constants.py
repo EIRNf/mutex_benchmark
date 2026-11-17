@@ -375,7 +375,6 @@ class Constants:
     tigon_payment_dist: int = 15
     iter: bool
     rusage: bool
-    software_cxl: bool
     hardware_cxl: bool
     numa_node: int | None = None
     skip_plotting: bool

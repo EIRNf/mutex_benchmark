@@ -139,7 +139,6 @@ def get_savefig_filepath(suffix=""):
     bench = Constants.bench + Constants.bench_variant
     alloc = (
         f"cxl-hw-node{Constants.numa_node}" if Constants.hardware_cxl
-        else "cxl-sw" if Constants.software_cxl
         else "malloc"
     )
 

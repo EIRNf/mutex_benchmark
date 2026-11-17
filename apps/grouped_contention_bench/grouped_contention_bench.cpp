@@ -143,8 +143,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    cxl_mutex_benchmark_init();
-
     SoftwareMutex *lock = get_mutex(args.mutex_name.c_str(), args.num_threads);
     if (lock == nullptr) {
         fprintf(stderr, "Failed to initialize lock.\n");
@@ -152,8 +150,6 @@ int main(int argc, char* argv[]) {
     }
 
     int result = grouped_contention_bench(args.num_threads, args.run_time_sec, args.num_groups, args.csv, args.rusage, lock);
-
-    cxl_mutex_benchmark_exit();
 
     return result;
 }

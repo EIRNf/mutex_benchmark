@@ -1,4 +1,5 @@
-// Use -Dcxl to compile for CXL.
+// Build with -Dhardware_cxl to place ALLOCATE'd lock memory on the NUMA node
+// named by MUTEX_BENCH_NUMA_NODE; otherwise ALLOCATE is plain malloc.
 
 
 #ifndef __CXL_UTILS_HPP
@@ -16,20 +17,7 @@
 
 
 // defined via macro so they can be changed for the actual hardware
-#ifdef cxl
-    #include "stddef.h"
-    extern "C" { 
-        void *emucxl_alloc(size_t size, int node);
-        void  emucxl_free(void *ptr, size_t size);
-        void emucxl_init();
-        void emucxl_exit();
-    }
-    #define ALLOCATE(size) emucxl_alloc(size, 1)
-    #define FREE(ptr, size) emucxl_free(ptr, size)
-
-    #define cxl_mutex_benchmark_init() emucxl_init()
-    #define cxl_mutex_benchmark_exit() emucxl_exit()
-#elif defined(hardware_cxl)
+#if defined(hardware_cxl)
     #include <cerrno>
     #include <climits>
     #include <cstdio>
@@ -241,16 +229,10 @@
 
     #define ALLOCATE(size) cxl_hardware_alloc(size, __FILE__, __LINE__)
     #define FREE(ptr, size) cxl_hardware_free(ptr, size)
-
-    #define cxl_mutex_benchmark_init() 
-    #define cxl_mutex_benchmark_exit()
 #else
     #define ALLOCATE(size) malloc(size)
     #define FREE(ptr, size) free(ptr); (void)(size) //
-    
-    #define cxl_mutex_benchmark_init()
-    #define cxl_mutex_benchmark_exit()
-#endif // CXL
+#endif // hardware_cxl
 
 #if defined(__x86_64)
     //#define Fence() __asm__ __volatile__ ( "mfence" )
