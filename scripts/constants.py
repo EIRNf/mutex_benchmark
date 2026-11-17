@@ -316,13 +316,14 @@ class Constants:
         ]
 
         EXECUTABLE_NAME = "max_contention_bench"
+        # Relative to the build directory (Constants.build_dir).
         BENCH_EXECUTABLES = {
-            "max": "./build/apps/max_contention_bench/max_contention_bench",
-            "grouped": "./build/apps/grouped_contention_bench/grouped_contention_bench",
-            "min": "./build/apps/min_contention_bench/min_contention_bench",
-            "tigon": "./build/apps/tigon_db_bench/bench_ycsb",
-            "tigon_ycsb": "./build/apps/tigon_db_bench/bench_ycsb",
-            "tigon_tpcc": "./build/apps/tigon_db_bench/bench_tpcc",
+            "max": "apps/max_contention_bench/max_contention_bench",
+            "grouped": "apps/grouped_contention_bench/grouped_contention_bench",
+            "min": "apps/min_contention_bench/min_contention_bench",
+            "tigon": "apps/tigon_db_bench/bench_ycsb",
+            "tigon_ycsb": "apps/tigon_db_bench/bench_ycsb",
+            "tigon_tpcc": "apps/tigon_db_bench/bench_tpcc",
         }
         BENCH_N_THREADS = 10
         BENCH_N_SECONDS = 1
@@ -378,6 +379,8 @@ class Constants:
     run_dir: str | None = None   # folder holding config.toml/run.json
     placement: str = "none"   # none | process | locks (see scripts/config.py)
     hardware_cxl: bool = False  # placement == "locks": -Dhardware_cxl build
+    build_dir: str = "build"    # build-hardware_cxl when hardware_cxl (scripts/builder.py)
+    skip_build: bool = False    # reuse build_dir as is (verified before running)
     numa_node: int | None = None
     skip_plotting: bool
     show: bool = False

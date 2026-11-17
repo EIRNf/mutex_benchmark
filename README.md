@@ -12,7 +12,6 @@ read with the standard-library `tomllib`). It builds the benchmarks with
 Meson and Ninja; `requirements.txt` installs both, and the driver finds them
 next to the Python running it, so a virtualenv works without activating it:
 
-
 ```bash
 python3 -m pip install -r requirements.txt
 ```
@@ -50,9 +49,13 @@ python3 -m scripts plot data/runs/<run-folder>
 python3 -m scripts plot data/runs/<run-folder> -o plot.layout=combined -o plot.speedup=ticket
 ```
 
-Before running, the build is checked against the placement: a build
-configured without `-Dhardware_cxl` cannot run `placement = "locks"` (and the
-reverse), which matters when `MUTEX_BENCH_SKIP_BUILD=1` reuses `build/`.
+**Builds.** Placement `locks` needs a `-Dhardware_cxl` build, so it builds
+into `build-hardware_cxl/`; everything else uses `build/`. Switching placement
+therefore never forces a full rebuild. `--no-build` (or
+`MUTEX_BENCH_SKIP_BUILD=1`) reuses the existing build, and `--build-dir DIR`
+picks another folder. Before running, the build is checked: one configured
+for the other placement, or built without a conditionally compiled lock you
+selected (`nsync`, `boost`, `umwait`, `futex`), is rejected.
 
 `-o KEY=VALUE` sets any setting by its dotted key and wins over the file.
 Values are read as TOML (`-o plot.show=true`, `-o seconds=2.5`); bare words are
@@ -86,6 +89,75 @@ With `locks`, every benchmark app places only lock memory; benchmark
 bookkeeping (counters, start/stop flags, thread stacks) stays in ordinary
 memory. Locks that allocate internally without `ALLOCATE` are not placed. CSV
 and figure names carry `cxl-hw-nodeN` (`locks`) or `membind-nodeN` (`process`).
+
+### Suites (`python -m scripts suite`)
+
+A suite runs several distinct experiments, each into its own run folder, for
+example every experiment in several memory environments. Examples live in
+`experiments/suites/`.
+
+```bash
+python3 -m scripts suite experiments/suites/placement.toml --list   # plan and time estimate
+python3 -m scripts suite experiments/suites/placement.toml
+python3 -m scripts suite experiments/suites/placement.toml --only max -o seconds=1
+python3 -m scripts suite --resume data/suites/<suite-folder>
+```
+
+```toml
+name = "placement"                  # default: the file name
+
+[defaults]                          # same keys as an experiment file
+capture = "throughput"
+locks   = { sets = ["paper"] }
+sweep   = { var = "threads", start = 1, stop = 41, step = 4 }
+
+[[environments]]                    # optional; every experiment runs in each one
+name   = "cxl"
+memory = { placement = "process", node = 1 }
+
+[[environments]]
+name    = "cxl-slow"
+memory  = { placement = "process", node = 1 }
+latency = "ffff"                    # CXL latency register value
+
+[latency_control]                   # needed when an environment sets latency
+pci      = "0000:a0:00.0"           # this host's CXL device; verify before use
+register = "0xe08.l"                # default
+
+[[experiments]]
+bench = "max"                       # named after the bench unless `name` is set
+
+[[experiments]]
+file = "../tigon_ycsb.toml"         # start from an experiment file
+vary = { "tigon.partition_ratio" = ["threads", "half", "quarter"] }  # one experiment per value
+```
+
+A run's settings are layered: `[defaults]`, then the experiment's `file`, its
+own keys, its `vary` value, the environment's `memory`, and last the `-o`
+overrides, which apply to every run. Every run is validated before anything
+starts.
+
+The suite folder, `data/suites/<timestamp>-<name>/` (or `--dir`), holds
+`suite.toml` (the file as given), `suite.json` (the plan, each run's status,
+and each session), and one run folder per run at `<environment>/<experiment>/`.
+The runner:
+
+- builds each needed build folder once, before the first run (`--no-build`
+  reuses them; each run still checks its build);
+- runs each experiment as its own `python -m scripts run` process, so a failed
+  run is recorded and the suite carries on (`--stop-on-failure` stops instead);
+- sets the CXL latency with `setpci` (under `sudo`) before each environment
+  that names one, returns to the original value for environments that don't,
+  and restores it when the suite ends, including on Ctrl-C or SIGTERM. Each
+  run's `run.json` records its environment and latency under `suite`.
+  Unattended suites need `sudo` not to prompt mid-run (for example a
+  `NOPASSWD` rule for `setpci`).
+
+`--resume` continues a suite from its folder (`suite.json` and the prepared
+run configs), never the original file: complete runs are skipped, and an
+unfinished run's folder is moved to `<run>.attempt-N` before it reruns.
+`--only GLOB` (repeatable) selects runs by key, experiment or environment
+name, such as `cxl/*`, `max` or `dram`.
 
 ### Flag CLI (`python -m scripts.main`)
 

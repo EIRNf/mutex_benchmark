@@ -1,5 +1,3 @@
-import os
-
 from .runner import run_experiment_iter_single_threaded, run_experiment_lock_level_single_threaded
 from .dataloader import load_data_iter, load_data_lock_level, debug_print_averages_lock_level
 from .plotter import plot_lock_level, plot_iter, plot_iter_rusage, plot_variability, plot_throughput_heatmap, print_speedup_table
@@ -54,6 +52,31 @@ def _dispatch():
         raise NotImplementedError(f"Capture mode '{Constants.capture}' not recognized")
 
 
+def _build_or_reuse(record):
+    """Build Constants.build_dir (unless skipped) and check it fits this run."""
+    if Constants.skip_build:
+        logger.info("Reusing the existing build in %s/", Constants.build_dir)
+    else:
+        build(
+            Constants.build_dir,
+            hardware_cxl=Constants.hardware_cxl,
+            mutex_names=Constants.mutex_names,
+            tigon=Constants.bench.startswith("tigon"),
+        )
+    cpp_args = verify_build_matches(
+        Constants.build_dir,
+        hardware_cxl=Constants.hardware_cxl,
+        mutex_names=Constants.mutex_names,
+        placement=Constants.placement,
+    )
+    if record:
+        record.update(build={
+            "dir": Constants.build_dir,
+            "cpp_args": cpp_args,
+            "skipped": Constants.skip_build,
+        })
+
+
 def run_configured(cfg):
     """Run (or, when reusing data, only plot) the experiment loaded into Constants.
 
@@ -74,13 +97,7 @@ def run_configured(cfg):
 
     try:
         if not Constants.skip_experiment:
-            build()
-            cpp_args = verify_build_matches()
-            if record:
-                record.update(build={
-                    "cpp_args": cpp_args,
-                    "skipped": os.environ.get("MUTEX_BENCH_SKIP_BUILD") == "1",
-                })
+            _build_or_reuse(record)
         _dispatch()
     except KeyboardInterrupt:
         if record:

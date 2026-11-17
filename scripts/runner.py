@@ -75,6 +75,11 @@ def _placement_prefix() -> list[str]:
     return []
 
 
+def executable_path() -> str:
+    """The configured benchmark binary inside the configured build directory."""
+    return os.path.join(Constants.build_dir, Constants.executable)
+
+
 def get_data_file_name(mutex_name, i, **iter_kwargs):
     """Return the CSV path for one benchmark point.
 
@@ -144,10 +149,11 @@ def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, criti
         # Use with_lock.sh to inject the mutex via LD_PRELOAD
         cmd = [
             "./scripts/with_lock.sh",
+            "-b", Constants.build_dir,
             "-n", str(max(128, threads * 4)),
             "-s", "app",
             mutex_name,
-            Constants.executable,
+            executable_path(),
             "--logtostderr=1",
             "--id=0",
             "--servers=127.0.0.1:1234",
@@ -206,8 +212,8 @@ def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, criti
         return cmd
 
     cmd = [
-        Constants.executable, 
-        mutex_name, 
+        executable_path(),
+        mutex_name,
         str(threads), 
         str(Constants.bench_n_seconds), 
     ]

@@ -30,8 +30,13 @@ from .runner import get_data_file_name, placement_tag
 
 _MAX_LISTED_MISSING = 50
 
+# Set by the suite runner for each run it starts: JSON naming the suite, the
+# run's key and its environment (including any CXL latency setting), which
+# run.json records under "suite".
+SUITE_CONTEXT_ENV = "MUTEX_BENCH_SUITE_CONTEXT"
 
-def _utc_now() -> str:
+
+def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -123,7 +128,7 @@ class RunRecord:
         self.data = {
             "name": self._cfg.name,
             "status": "running",
-            "started_utc": _utc_now(),
+            "started_utc": utc_now(),
             "finished_utc": None,
             "command": command_line(),
             "data_folder": Constants.data_folder,
@@ -140,6 +145,9 @@ class RunRecord:
         }
         if self._cfg.is_tigon:
             self.data["tigon_submodule"] = git_info("apps/tigon_db_bench/tigon")
+        suite = _suite_context()
+        if suite is not None:
+            self.data["suite"] = suite
         self._write()
 
     def update(self, **fields):
@@ -148,23 +156,44 @@ class RunRecord:
 
     def finish(self, status: str, error: str | None = None):
         self.data["status"] = status
-        self.data["finished_utc"] = _utc_now()
+        self.data["finished_utc"] = utc_now()
         if error is not None:
             self.data["error"] = error
         self.data["data_points"] = data_point_summary()
         self._write()
 
     def _write(self):
-        tmp_path = self.record_path + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as handle:
-            json.dump(self.data, handle, indent=2)
-            handle.write("\n")
-        os.replace(tmp_path, self.record_path)
+        write_json_atomic(self.record_path, self.data)
+
+
+def write_json_atomic(path: str, data) -> None:
+    """Write JSON so readers never see a half-written file."""
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2)
+        handle.write("\n")
+    os.replace(tmp_path, path)
+
+
+def read_json(path: str) -> dict | None:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _suite_context() -> dict | None:
+    raw = os.environ.get(SUITE_CONTEXT_ENV)
+    if not raw:
+        return None
+    try:
+        context = json.loads(raw)
+    except ValueError:
+        return None
+    return context if isinstance(context, dict) else None
 
 
 def read_record(run_dir: str) -> dict | None:
-    try:
-        with open(os.path.join(run_dir, RECORD_FILE), encoding="utf-8") as handle:
-            return json.load(handle)
-    except (OSError, json.JSONDecodeError):
-        return None
+    return read_json(os.path.join(run_dir, RECORD_FILE))

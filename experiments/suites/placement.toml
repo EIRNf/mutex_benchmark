@@ -1,0 +1,55 @@
+# Where should lock memory live? Every experiment runs in three environments:
+# all of its memory on DRAM, all of it on CXL, and only the locks on CXL.
+#
+#   python -m scripts suite experiments/suites/placement.toml --list
+#   python -m scripts suite experiments/suites/placement.toml
+#   python -m scripts suite experiments/suites/placement.toml --only max -o seconds=1
+#   python -m scripts suite --resume data/suites/<timestamp>-placement
+#
+# Node numbers are host-specific: check `numactl --hardware` (DRAM is usually
+# node 0; a CXL expander shows up as a node without CPUs).
+
+[defaults]
+capture     = "throughput"
+seconds     = 10
+repetitions = 3
+locks       = { sets = ["paper"] }
+sweep       = { var = "threads", start = 1, stop = 41, step = 4 }
+plot        = { layout = "faceted" }
+
+[[environments]]
+name   = "dram"
+memory = { placement = "process", node = 0 }
+
+[[environments]]
+name   = "cxl"
+memory = { placement = "process", node = 1 }
+
+[[environments]]
+name   = "cxl-locks"
+memory = { placement = "locks", node = 1 }
+
+# To also vary the CXL latency, name the device and give an environment a
+# `latency` value. setpci runs under sudo, and the original value is written
+# back when the suite ends, however it ends.
+#
+# [latency_control]
+# pci      = "0000:a0:00.0"   # this host's CXL device; verify before use
+# register = "0xe08.l"
+#
+# [[environments]]
+# name    = "cxl-slow"
+# memory  = { placement = "process", node = 1 }
+# latency = "ffff"
+
+[[experiments]]
+bench = "max"
+
+[[experiments]]
+bench = "min"
+
+# One entry can expand into several experiments, for example:
+#
+# [[experiments]]
+# file = "../tigon_ycsb.toml"
+# vary = { "tigon.partition_ratio" = ["threads", "half", "quarter"] }

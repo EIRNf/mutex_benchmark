@@ -37,6 +37,7 @@ from datetime import datetime
 from difflib import get_close_matches
 from typing import Any
 
+from .builder import default_build_dir
 from .constants import Constants
 from .logger import logger
 
@@ -172,7 +173,7 @@ RECORD_FILE = "run.json"
 _TIMESTAMP_DIR = re.compile(r"^\d{8}T\d{6}\d*$")
 
 
-def _timestamp() -> str:
+def timestamp() -> str:
     return datetime.now().strftime("%Y%m%dT%H%M%S%f")
 
 
@@ -186,10 +187,14 @@ class RunPaths:
 
     @classmethod
     def for_new_run(cls, name: str, run_dir: str | None = None, root: str = RUNS_ROOT):
-        """A fresh self-describing run folder: config.toml, run.json, raw/, plots/, logs/."""
+        """A fresh self-describing run folder: config.toml, run.json, raw/, plots/, logs/.
+
+        A given run_dir may already hold a config.toml (a suite prepares its
+        run folders that way) but not a run.json, which marks a started run.
+        """
         if run_dir is None:
-            run_dir = os.path.join(root, f"{_timestamp()}-{name}")
-        elif os.path.exists(os.path.join(run_dir, CONFIG_FILE)):
+            run_dir = os.path.join(root, f"{timestamp()}-{name}")
+        elif os.path.exists(os.path.join(run_dir, RECORD_FILE)):
             raise ConfigError(f"{run_dir} already holds a run; choose another directory")
         return cls(
             data=os.path.join(run_dir, "raw"),
@@ -231,7 +236,7 @@ class RunPaths:
             if reuse:
                 data_folder = _newest_timestamped_run(default_root)
             else:
-                data_folder = os.path.join(default_root, _timestamp())
+                data_folder = os.path.join(default_root, timestamp())
         return cls(
             data=data_folder,
             plots=os.path.normpath(os.path.join(data_folder, "..", "figs")),
@@ -378,6 +383,24 @@ def _parse_override_value(raw: str, tp):
     return value
 
 
+def set_dotted(data: dict, key: str, value) -> None:
+    """Set one setting by dotted key in raw config data, creating tables as needed.
+
+    The value is checked against the schema later, when the data becomes an
+    ExperimentConfig; only the key is checked here.
+    """
+    path = key.split(".")
+    if is_dataclass(_field_type(path)):
+        raise ConfigError(f"`{key}` is a table; set one of its keys instead")
+    table = data
+    for part in path[:-1]:
+        child = table.setdefault(part, {})
+        if not isinstance(child, dict):
+            raise ConfigError(f"`{part}` is not a table")
+        table = child
+    table[path[-1]] = value
+
+
 def apply_overrides(data: dict, overrides) -> dict:
     """Apply ``key=value`` overrides (dotted keys) to raw config data in place."""
     for override in overrides or ():
@@ -385,17 +408,7 @@ def apply_overrides(data: dict, overrides) -> dict:
         key = key.strip()
         if not sep or not key:
             raise ConfigError(f"override {override!r} must look like key=value")
-        path = key.split(".")
-        tp = _field_type(path)
-        if is_dataclass(tp):
-            raise ConfigError(f"`{key}` is a table; override one of its keys instead")
-        table = data
-        for part in path[:-1]:
-            child = table.setdefault(part, {})
-            if not isinstance(child, dict):
-                raise ConfigError(f"`{part}` is not a table")
-            table = child
-        table[path[-1]] = _parse_override_value(raw.strip(), tp)
+        set_dotted(data, key, _parse_override_value(raw.strip(), _field_type(key.split("."))))
     return data
 
 
@@ -671,8 +684,13 @@ def tigon_warmup_seconds(cfg_seconds: float, warmup: int | None) -> int:
     return warmup if warmup is not None else min(1, run_seconds - 1)
 
 
-def apply_to_constants(cfg: ExperimentConfig, paths: RunPaths | None = None):
-    """Copy a validated config and its output paths onto Constants."""
+def apply_to_constants(cfg: ExperimentConfig, paths: RunPaths | None = None, *,
+                       build_dir: str | None = None, skip_build: bool | None = None):
+    """Copy a validated config, its output paths and build choice onto Constants.
+
+    build_dir defaults to the placement's own build folder (build/ or
+    build-hardware_cxl/). skip_build defaults to MUTEX_BENCH_SKIP_BUILD=1.
+    """
     if paths is None:
         paths = RunPaths.legacy(Constants.Defaults.DATA_FOLDER, Constants.Defaults.LOGS_FOLDER, False)
     C = Constants
@@ -743,6 +761,10 @@ def apply_to_constants(cfg: ExperimentConfig, paths: RunPaths | None = None):
     C.placement = cfg.memory.placement
     C.hardware_cxl = cfg.memory.placement == "locks"
     C.numa_node = cfg.memory.node
+    C.build_dir = build_dir or default_build_dir(C.hardware_cxl)
+    if skip_build is None:
+        skip_build = os.environ.get("MUTEX_BENCH_SKIP_BUILD") == "1"
+    C.skip_build = skip_build
 
     level = getattr(logging, cfg.output.log_level.upper())
     C.log = level

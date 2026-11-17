@@ -18,6 +18,7 @@ from scripts.config import (
 from scripts.constants import Constants
 from scripts.main import run_configured
 from scripts.rundir import expected_data_files
+from scripts.runner import get_command
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -55,7 +56,11 @@ class RunPathsTests(unittest.TestCase):
 
     def test_new_run_refuses_to_overwrite_a_recorded_run(self):
         with tempfile.TemporaryDirectory() as run_dir:
+            # A prepared folder (config.toml only, as a suite leaves it) is fine...
             Path(run_dir, "config.toml").write_text("", encoding="utf-8")
+            self.assertEqual(RunPaths.for_new_run("demo", run_dir).run_dir, run_dir)
+            # ...but a started run (run.json) is never overwritten.
+            Path(run_dir, "run.json").write_text("{}", encoding="utf-8")
             with self.assertRaisesRegex(ConfigError, "already holds a run"):
                 RunPaths.for_new_run("demo", run_dir)
 
@@ -103,8 +108,8 @@ class RunPathsTests(unittest.TestCase):
 
 
 @patch("scripts.main.init_logger", lambda: None)
-@patch("scripts.main.build", lambda: None)
-@patch("scripts.main.verify_build_matches", lambda: ["-std=c++20"])
+@patch("scripts.main.build", lambda *args, **kwargs: None)
+@patch("scripts.main.verify_build_matches", lambda *args, **kwargs: ["-std=c++20"])
 class RunRecordTests(unittest.TestCase):
     def start_run(self, tmp):
         cfg = config_from_toml(SWEEP)
@@ -128,7 +133,7 @@ class RunRecordTests(unittest.TestCase):
             self.assertEqual(record["status"], "complete")
             self.assertEqual(record["locks"], ["spin", "ticket"])
             self.assertEqual(record["placement"]["mode"], "none")
-            self.assertEqual(record["build"]["cpp_args"], ["-std=c++20"])
+            self.assertEqual(record["build"], {"dir": "build", "cpp_args": ["-std=c++20"], "skipped": False})
             self.assertEqual(record["data_points"]["expected"], 4)  # 2 locks x 2 thread counts
             self.assertEqual(record["data_points"]["written"], 1)
             self.assertEqual(len(record["data_points"]["missing"]), 3)
@@ -169,16 +174,40 @@ class BuildVerificationTests(unittest.TestCase):
     def test_build_must_match_the_placement_mode(self):
         with tempfile.TemporaryDirectory() as tmp:
             build_dir = self.build_dir(tmp, ["-Dhardware_cxl", "-lnuma", "-std=c++20"])
-            with patch.multiple(Constants, hardware_cxl=False, placement="none"):
-                with self.assertRaisesRegex(RuntimeError, "configured with -Dhardware_cxl"):
-                    verify_build_matches(build_dir)
-            with patch.multiple(Constants, hardware_cxl=True, placement="locks"):
-                self.assertIn("-Dhardware_cxl", verify_build_matches(build_dir))
+            with self.assertRaisesRegex(RuntimeError, "configured with -Dhardware_cxl"):
+                verify_build_matches(build_dir, hardware_cxl=False, mutex_names=["spin"], placement="none")
+            cpp_args = verify_build_matches(build_dir, hardware_cxl=True, mutex_names=["spin"], placement="locks")
+            self.assertIn("-Dhardware_cxl", cpp_args)
+
+    def test_build_must_include_conditionally_compiled_locks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            build_dir = self.build_dir(tmp, ["-std=c++20", "-Dinc_futex"])
+            verify_build_matches(build_dir, hardware_cxl=False, mutex_names=["spin", "futex"])
+            with self.assertRaisesRegex(RuntimeError, "built without -Dinc_boost"):
+                verify_build_matches(build_dir, hardware_cxl=False, mutex_names=["futex", "boost"])
 
     def test_unconfigured_build_is_an_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaisesRegex(RuntimeError, "not a configured Meson build"):
-                verify_build_matches(tmp)
+                verify_build_matches(tmp, hardware_cxl=False, mutex_names=[])
+
+    def test_each_placement_gets_its_own_build_folder(self):
+        cfg = config_from_toml(SWEEP)
+        apply_to_constants(cfg, skip_build=False)
+        self.assertEqual(Constants.build_dir, "build")
+        self.assertTrue(get_command("spin", threads=2)[0].startswith("build/apps/"))
+
+        cfg = config_from_toml(SWEEP, ["memory.placement=locks", "memory.node=1"])
+        apply_to_constants(cfg, skip_build=False)
+        self.assertEqual(Constants.build_dir, "build-hardware_cxl")
+        self.assertTrue(get_command("spin", threads=2)[0].startswith("build-hardware_cxl/apps/"))
+
+        tigon = config_from_toml(SWEEP, ["bench=tigon_ycsb", "locks.include=mcs"])
+        apply_to_constants(tigon, build_dir="/tmp/other-build", skip_build=False)
+        command = get_command("mcs", threads=2)
+        self.assertEqual(command[1:3], ["-b", "/tmp/other-build"])
+        self.assertEqual(command[command.index("mcs") + 1], "/tmp/other-build/apps/tigon_db_bench/bench_ycsb")
+        apply_to_constants(config_from_toml(SWEEP), skip_build=False)  # reset for other tests
 
 
 class PlotCommandTests(unittest.TestCase):

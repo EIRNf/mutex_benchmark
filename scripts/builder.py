@@ -7,7 +7,29 @@ import shutil
 import subprocess
 import sys
 
-BUILD_DIR = "build"
+DEFAULT_BUILD_DIR = "build"
+HARDWARE_CXL_BUILD_DIR = "build-hardware_cxl"
+TIGON_BUILD_SCRIPT = "./apps/tigon_db_bench/build.sh"
+
+
+def default_build_dir(hardware_cxl: bool) -> str:
+    """Builds with and without -Dhardware_cxl live in separate folders, so
+    switching placement between runs never forces a full rebuild."""
+    return HARDWARE_CXL_BUILD_DIR if hardware_cxl else DEFAULT_BUILD_DIR
+
+
+def required_cpp_args(hardware_cxl: bool, mutex_names) -> list[str]:
+    """The compiler arguments a build needs for this placement and lock list."""
+    args = []
+    if hardware_cxl:
+        args += ["-Dhardware_cxl", "-lnuma"]
+    args.append("-std=c++20")
+    args += [
+        f"-Dinc_{name}" for name in Constants.Defaults.CONDITIONAL_COMPILATION_MUTEXES
+        if name in mutex_names
+    ]
+    return args
+
 
 def setup():
     # Make sure the script is being run from the right location (in mutex_benchmark directory)
@@ -52,7 +74,7 @@ def prepare_output_dirs():
         os.makedirs(folder, exist_ok=True)
 
 
-def configured_cpp_args(build_dir=BUILD_DIR):
+def configured_cpp_args(build_dir):
     """The cpp_args a Meson build directory was configured with, or None."""
     try:
         with open(os.path.join(build_dir, "meson-info", "intro-buildoptions.json"), encoding="utf-8") as handle:
@@ -65,56 +87,55 @@ def configured_cpp_args(build_dir=BUILD_DIR):
     return []
 
 
-def verify_build_matches(build_dir=BUILD_DIR):
-    """Fail if the build directory was configured for a different placement mode.
+def verify_build_matches(build_dir, *, hardware_cxl: bool, mutex_names, placement: str = ""):
+    """Fail if a build directory cannot run this configuration.
 
-    Matters when MUTEX_BENCH_SKIP_BUILD=1 reuses an existing build: a malloc
-    build cannot honor placement = "locks", and a hardware_cxl build would
-    place lock memory when it should not.
+    Matters whenever an existing build is reused (--no-build,
+    MUTEX_BENCH_SKIP_BUILD=1, or a suite's shared build): a malloc build
+    cannot honor placement = "locks", a hardware_cxl build would place lock
+    memory when it should not, and conditionally compiled locks (nsync,
+    boost, umwait, futex) are missing unless the build enabled them.
     """
     cpp_args = configured_cpp_args(build_dir)
     if cpp_args is None:
-        raise RuntimeError(f"{build_dir}/ is not a configured Meson build; build without MUTEX_BENCH_SKIP_BUILD")
+        raise RuntimeError(f"{build_dir}/ is not a configured Meson build; run without --no-build to build it")
     built_for_locks = "-Dhardware_cxl" in cpp_args
-    if built_for_locks != bool(Constants.hardware_cxl):
+    if built_for_locks != bool(hardware_cxl):
         built = "with" if built_for_locks else "without"
         raise RuntimeError(
             f"{build_dir}/ is configured {built} -Dhardware_cxl, which does not match "
-            f"placement = {Constants.placement!r}; rebuild (unset MUTEX_BENCH_SKIP_BUILD)"
+            f"placement = {placement!r}; rebuild it (run without --no-build)"
+        )
+    missing = [
+        arg for arg in required_cpp_args(hardware_cxl, mutex_names)
+        if arg.startswith("-Dinc_") and arg not in cpp_args
+    ]
+    if missing:
+        raise RuntimeError(
+            f"{build_dir}/ was built without {', '.join(missing)}, which the selected locks "
+            "need; rebuild it (run without --no-build)"
         )
     return cpp_args
 
 
-def build():
-    os.makedirs(BUILD_DIR, exist_ok=True)
+def build(build_dir, *, hardware_cxl: bool, mutex_names, tigon: bool):
+    """Configure and compile one build directory (and Tigon into it, if asked)."""
+    os.makedirs(build_dir, exist_ok=True)
+    setup_command = ["meson", "setup", build_dir]
+    if os.path.exists(os.path.join(build_dir, "meson-info", "meson-info.json")):
+        setup_command.append("--reconfigure")
+    _run_checked(setup_command, "Meson setup failed.")
 
-    if os.environ.get("MUTEX_BENCH_SKIP_BUILD") == "1":
-        logger.info("Skipping build because MUTEX_BENCH_SKIP_BUILD=1")
-        return
-
-    meson_setup_cmd = ["meson", "setup", "build"]
-    if os.path.exists("build/meson-info/meson-info.json"):
-        meson_setup_cmd.append("--reconfigure")
-    _run_checked(meson_setup_cmd, "Meson setup failed.")
-    configure_command = "meson configure build --optimization 3".split()
-
-    cpp_args = []
-    if Constants.hardware_cxl:
-        cpp_args.append("'-Dhardware_cxl'")
-        cpp_args.append("'-lnuma'")
-    # cpp_args.append("'-mwaitpkg'")
-    cpp_args.append("'-std=c++20'")
-    for mutex_name in Constants.Defaults.CONDITIONAL_COMPILATION_MUTEXES:
-        if mutex_name in Constants.mutex_names:
-            cpp_args.append(f"'-Dinc_{mutex_name}'")
-    configure_command.append(f'-Dcpp_args=[{",".join(cpp_args)}]')
-    print(configure_command)
-
+    cpp_args = ",".join(f"'{arg}'" for arg in required_cpp_args(hardware_cxl, mutex_names))
+    configure_command = ["meson", "configure", build_dir, "--optimization", "3", f"-Dcpp_args=[{cpp_args}]"]
+    logger.info("Configuring %s: %s", build_dir, " ".join(configure_command))
     _run_checked(configure_command, "Meson configuration failed.")
-    _run_checked("meson compile -C build".split(), "Meson compilation failed.")
+    _run_checked(["meson", "compile", "-C", build_dir], "Meson compilation failed.")
 
-    if Constants.bench.startswith("tigon"):
-        logger.info("Building Tigon benchmark suite...")
-        tigon_build_script = "./apps/tigon_db_bench/build.sh"
-        if os.path.exists(tigon_build_script):
-            _run_checked([tigon_build_script, "./build/apps/tigon_db_bench"], "Tigon build failed.")
+    if tigon:
+        logger.info("Building Tigon benchmark suite into %s...", build_dir)
+        if os.path.exists(TIGON_BUILD_SCRIPT):
+            _run_checked(
+                [TIGON_BUILD_SCRIPT, os.path.join(build_dir, "apps", "tigon_db_bench")],
+                "Tigon build failed.",
+            )
