@@ -1,7 +1,9 @@
 # Python 3.11 or newer is required (the experiment configs use tomllib).
 # Tested with Python 3.13, matplotlib 3.11.0, numpy 2.5.1, pandas 3.0.3,
-# seaborn 0.13.2.
+# seaborn 0.13.2, meson 1.12.1, ninja 1.13.2.
 matplotlib
+meson
+ninja
 numpy
 pandas
 seaborn

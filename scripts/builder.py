@@ -2,8 +2,10 @@ from .constants import *
 from .logger import logger
 
 import json
-import subprocess
 import os
+import shutil
+import subprocess
+import sys
 
 BUILD_DIR = "build"
 
@@ -14,9 +16,32 @@ def setup():
     os.chdir(parent_directory + "/..")
 
 
+def _build_env() -> dict:
+    """The environment for build commands.
+
+    Puts the running interpreter's bin directory on PATH, so meson and ninja
+    installed in this Python's virtualenv (pip install -r requirements.txt)
+    are found even when the virtualenv is not activated, e.g. when running
+    `venv/bin/python -m scripts ...` directly or from an IDE.
+    """
+    env = os.environ.copy()
+    interpreter_bin = os.path.dirname(sys.executable)
+    path = env.get("PATH", "")
+    if interpreter_bin and interpreter_bin not in path.split(os.pathsep):
+        env["PATH"] = os.pathsep.join(p for p in (interpreter_bin, path) if p)
+    return env
+
+
 def _run_checked(command, error_message):
     logger.debug(f"Running command: {command}")
-    result = subprocess.run(command)
+    env = _build_env()
+    if shutil.which(command[0], path=env["PATH"]) is None:
+        raise RuntimeError(
+            f"{error_message} `{command[0]}` was not found on PATH or next to {sys.executable}. "
+            "Install the build tools (python3 -m pip install -r requirements.txt, "
+            "or brew/apt install meson ninja) or activate the virtualenv that has them."
+        )
+    result = subprocess.run(command, env=env)
     if result.returncode != 0:
         raise RuntimeError(error_message)
 

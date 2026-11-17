@@ -8,7 +8,10 @@ Install the Boost library [here](https://www.boost.org/doc/libs/1_53_0/doc/html/
 Install nsync [here](https://github.com/google/nsync).
 
 The Python driver needs Python 3.11 or newer (experiment configs are TOML,
-read with the standard-library `tomllib`):
+read with the standard-library `tomllib`). It builds the benchmarks with
+Meson and Ninja; `requirements.txt` installs both, and the driver finds them
+next to the Python running it, so a virtualenv works without activating it:
+
 
 ```bash
 python3 -m pip install -r requirements.txt
