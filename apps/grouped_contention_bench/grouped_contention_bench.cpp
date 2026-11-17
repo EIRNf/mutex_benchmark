@@ -12,17 +12,7 @@
 
 #include "lock.hpp"
 
-#ifdef __linux__
-#include <numa.h>
-#endif
-
 int grouped_contention_bench(int num_threads, double run_time, int num_groups, bool csv, bool rusage, SoftwareMutex* lock) {
-
-#ifdef hardware_cxl
-    int numa = numa_available()+1;
-#else
-    int numa = 0;
-#endif
 
     // Create run args structure to hold thread arguments
     // struct run_args args;
@@ -97,7 +87,7 @@ int grouped_contention_bench(int num_threads, double run_time, int num_groups, b
 
     // Cleanup resources: destroy and free the lock (numa_delete when the
     // lock was NUMA-allocated by get_mutex(), plain delete otherwise).
-    destroy_and_delete_lock(lock, numa);
+    destroy_and_delete_lock(lock);
 
     // Output benchmark results
 

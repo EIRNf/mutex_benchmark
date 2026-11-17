@@ -9,10 +9,6 @@
 #include <atomic>
 #include <memory>
 #include <string>
-#ifdef __linux__
-#include <numa.h>
-#include <numaif.h>
-#endif
 #include <errno.h>
 #include <sys/mman.h>
 #include <string.h>
@@ -38,182 +34,17 @@ int max_contention_bench(
     SoftwareMutex* lock
 ) {
 
-#ifdef hardware_cxl
-    int numa = 1;
-#else
-    int numa = 0;
-#endif
-
-    setup_numa_mempolicy_or_fail(numa);
-
-    // Create run args structure to hold thread arguments
-    // struct run_args args;
-    // args.num_threads = num_threads;
-    // args.thread_args = new per_thread_args*[num_threads];
-
-    // Create shared memory for the lock
-    // This could be a simple pointer or a more complex shared memory structure
-    // void* shared_memory = nullptr; // Replace with actual shared memory allocation if needed
-
-    // Initialize the lock
-
-    // Get current memory policy
-#ifdef __linux__
-    int mode;
-    unsigned long nodemask[16] = {0};
-    unsigned long maxnode = sizeof(nodemask) * 8;
-    int preferred_node = -1;
-
-    // COMMENTED OUT: Using memeater for preallocation instead of mlock
-    // The following large allocation and mlock code is disabled since we're using
-    // memeater to preallocate memory on the desired NUMA nodes
-    /*
-    // Allocate and lock 256GB of memory with NUMA policy
-    size_t large_alloc_size = 256UL * 1024 * 1024 * 1024; // 256GB
-    void* large_mem = nullptr;
-
-    if (get_mempolicy(&mode, nodemask, maxnode, nullptr, 0) == 0) {
-        fprintf(stderr, "DEBUG: get_mempolicy succeeded, mode=%d\n", mode);
-        fprintf(stderr, "DEBUG: nodemask[0]=0x%lx\n", nodemask[0]);
-
-        if (mode == MPOL_INTERLEAVE) {
-            fprintf(stderr, "DEBUG: Using INTERLEAVE mode\n");
-            // For interleave mode, allocate with numa_alloc_interleaved
-            if (numa_available() >= 0) {
-                // Set the interleave mask to match the policy
-                struct bitmask *mask = numa_allocate_nodemask();
-                for (int node = 0; node <= numa_max_node(); node++) {
-                    if (nodemask[node / (sizeof(unsigned long) * 8)] & (1UL << (node % (sizeof(unsigned long) * 8)))) {
-                        numa_bitmask_setbit(mask, node);
-                        fprintf(stderr, "DEBUG: Adding node %d to interleave mask\n", node);
-                    }
-                }
-
-                // Use numa_alloc_interleaved_subset to allocate only on specified nodes
-                fprintf(stderr, "DEBUG: Set interleave mask, allocating %zu bytes\n", large_alloc_size);
-
-                // numa_alloc_interleaved_subset allocates on the specified nodes only
-                large_mem = numa_alloc_interleaved_subset(large_alloc_size, mask);
-
-                numa_free_nodemask(mask);
-            }
-        } else if (mode == MPOL_BIND || mode == MPOL_PREFERRED) {
-            // For bind/preferred mode, allocate on specific node
-            for (int node = 0; node <= numa_max_node(); node++) {
-                if (nodemask[node / (sizeof(unsigned long) * 8)] & (1UL << (node % (sizeof(unsigned long) * 8)))) {
-                    preferred_node = node;
-                    fprintf(stderr, "DEBUG: Found node %d in mask\n", node);
-                    break;
-                }
-            }
-            if (preferred_node >= 0 && numa_available() >= 0) {
-                fprintf(stderr, "DEBUG: Allocating 256GB on NUMA node %d\n", preferred_node);
-                large_mem = numa_alloc_onnode(large_alloc_size, preferred_node);
-            }
-        }
-
-        if (large_mem != nullptr) {
-            fprintf(stderr, "DEBUG: Allocated 256GB at %p\n", large_mem);
-            // Lock the memory to prevent swapping
-            if (mlock(large_mem, large_alloc_size) == 0) {
-                fprintf(stderr, "DEBUG: Successfully locked 256GB of memory\n");
-                // Touch the memory to force allocation
-                memset(large_mem, 0, large_alloc_size);
-                fprintf(stderr, "DEBUG: Memory touched\n");
-            } else {
-                fprintf(stderr, "DEBUG: Failed to lock memory: %s\n", strerror(errno));
-            }
-        } else {
-            fprintf(stderr, "DEBUG: Failed to allocate 256GB: %s\n", strerror(errno));
-        }
-    }
-    */
-
-    // Get memory policy for smaller allocations
-    if(numa){
-        if (get_mempolicy(&mode, nodemask, maxnode, nullptr, 0) == 0) {
-            fprintf(stderr, "DEBUG: get_mempolicy succeeded, mode=%d\n", mode);
-            fprintf(stderr, "DEBUG: nodemask[0]=0x%lx\n", nodemask[0]);
-
-            if (mode == MPOL_BIND || mode == MPOL_PREFERRED) {
-                for (int node = 0; node <= numa_max_node(); node++) {
-                    if (nodemask[node / (sizeof(unsigned long) * 8)] & (1UL << (node % (sizeof(unsigned long) * 8)))) {
-                        preferred_node = node;
-                        fprintf(stderr, "DEBUG: Found node %d in mask\n", node);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-#endif
-
-
+    // Placement policy (shared by all benchmark apps): only lock memory is
+    // NUMA-placed in a -Dhardware_cxl build (get_mutex()/ALLOCATE). Benchmark
+    // bookkeeping uses ordinary memory; to bind the whole process to a node,
+    // run under `numactl --membind` (placement = "process" in the configs).
     lock->init(num_threads);
 
-    // Use NUMA-aware allocation that respects numactl settings
-    volatile int* counter;
-    volatile int* last;
-    volatile int* total_unfair;
-
-#if defined(__linux__) && defined(hardware_cxl)
-    if (numa) {
-        counter = static_cast<volatile int*>(
-            cxl_hardware_alloc(sizeof(int), __FILE__, __LINE__)
-        );
-        last = static_cast<volatile int*>(
-            cxl_hardware_alloc(sizeof(int), __FILE__, __LINE__)
-        );
-        total_unfair = static_cast<volatile int*>(
-            cxl_hardware_alloc(sizeof(int), __FILE__, __LINE__)
-        );
-    } else
-#endif
-    {
-        counter = new int;
-        last = new int;
-        total_unfair = new int;
-    }
-
-    *counter = 0;
-    *last = -1;
-    *total_unfair = 0;
-    
-    std::atomic<bool>* start_flag_raw = nullptr;
-    std::atomic<bool>* end_flag_raw = nullptr;
-
-#if defined(__linux__) && defined(hardware_cxl)
-    if (numa) {
-        start_flag_raw = static_cast<std::atomic<bool>*>(
-            cxl_hardware_alloc(sizeof(std::atomic<bool>), __FILE__, __LINE__)
-        );
-        end_flag_raw = static_cast<std::atomic<bool>*>(
-            cxl_hardware_alloc(sizeof(std::atomic<bool>), __FILE__, __LINE__)
-        );
-        new (start_flag_raw) std::atomic<bool>(false);
-        new (end_flag_raw) std::atomic<bool>(false);
-    } else
-#endif
-    {
-        start_flag_raw = new std::atomic<bool>(false);
-        end_flag_raw = new std::atomic<bool>(false);
-    }
-
-#ifdef __linux__
-    auto start_flag = std::shared_ptr<std::atomic<bool>>(start_flag_raw, [numa](std::atomic<bool>* p) {
-        p->~atomic();
-        if (numa) numa_free(p, sizeof(std::atomic<bool>));
-        else delete p;
-    });
-    auto end_flag = std::shared_ptr<std::atomic<bool>>(end_flag_raw, [numa](std::atomic<bool>* p) {
-        p->~atomic();
-        if (numa) numa_free(p, sizeof(std::atomic<bool>));
-        else delete p;
-    });
-#else
-    auto start_flag = std::shared_ptr<std::atomic<bool>>(start_flag_raw);
-    auto end_flag = std::shared_ptr<std::atomic<bool>>(end_flag_raw);
-#endif
+    volatile int* counter = new int(0);
+    volatile int* last = new int(-1);
+    volatile int* total_unfair = new int(0);
+    auto start_flag = std::make_shared<std::atomic<bool>>(false);
+    auto end_flag = std::make_shared<std::atomic<bool>>(false);
 
     std::vector<per_thread_args> thread_args(num_threads);
     for (int i = 0; i < num_threads; ++i) {
@@ -328,32 +159,11 @@ int max_contention_bench(
             *total_unfair, expectedCounter, unfair_percentage);
     }
 
-    // Free NUMA-allocated memory properly
-#ifdef __linux__
-    if (numa) {
-        numa_free((void*)counter, sizeof(int));
-        numa_free((void*)last, sizeof(int));
-        numa_free((void*)total_unfair, sizeof(int));
-    } else
-#endif
-    {
-        delete counter;
-        delete last;
-        delete total_unfair;
-    }
+    delete counter;
+    delete last;
+    delete total_unfair;
 
-    destroy_and_delete_lock(lock, numa);
-
-    // COMMENTED OUT: Using memeater for preallocation instead
-    /*
-    // Free the large allocation
-    if (large_mem != nullptr) {
-        munlock(large_mem, large_alloc_size);
-        numa_free(large_mem, large_alloc_size);
-        fprintf(stderr, "DEBUG: Freed 256GB allocation\n");
-    }
-    */
-
+    destroy_and_delete_lock(lock);
 
     if (!no_output && !rusage) {
         for (auto& targs : thread_args) {

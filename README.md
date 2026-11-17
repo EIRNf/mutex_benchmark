@@ -57,11 +57,10 @@ resolved config, which is also a good starting point for a new file.
 | `process` | everything the benchmark allocates: lock state, thread stacks, benchmark and Tigon data | each benchmark runs under `numactl --membind=node` |
 | `locks` | lock memory | `-Dhardware_cxl` build; lock objects and `ALLOCATE`d regions are `mbind()`-placed via `MUTEX_BENCH_NUMA_NODE` |
 
-Caveat for `locks`: `max_contention_bench` currently also binds its whole
-process to the node when the benchmark starts (`set_mempolicy`), so for `max`
-it behaves close to `process`; `min` and `grouped` place only lock memory, and
-locks that allocate internally without `ALLOCATE` are not placed. CSV and
-figure names carry `cxl-hw-nodeN` (`locks`) or `membind-nodeN` (`process`).
+With `locks`, every benchmark app places only lock memory; benchmark
+bookkeeping (counters, start/stop flags, thread stacks) stays in ordinary
+memory. Locks that allocate internally without `ALLOCATE` are not placed. CSV
+and figure names carry `cxl-hw-nodeN` (`locks`) or `membind-nodeN` (`process`).
 
 ### Flag CLI (`python -m scripts.main`)
 
