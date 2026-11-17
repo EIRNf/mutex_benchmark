@@ -323,9 +323,7 @@ class Constants:
             "tigon": "./build/apps/tigon_db_bench/bench_ycsb",
             "tigon_ycsb": "./build/apps/tigon_db_bench/bench_ycsb",
             "tigon_tpcc": "./build/apps/tigon_db_bench/bench_tpcc",
-            "damer_moe": "./build/apps/damer_moe_bench/damer_moe_bench",
         }
-        MOE_PLAN_PATH = "./build/apps/damer_moe_bench/moe_plan.tsv"
         BENCH_N_THREADS = 10
         BENCH_N_SECONDS = 1
 
@@ -362,13 +360,6 @@ class Constants:
     log                  = Defaults.LOG
     bench: str           = Defaults.BENCH
     bench_variant: str   = ""
-    damer_root: str | None = None
-    moe_workload: str | None = None
-    moe_experts: int = 8
-    moe_granularity: str = "expert"
-    moe_movement: str = "fused"
-    moe_count: str = "events"
-    moe_kv_scale: float = 1.0 / 64.0
     tigon_query: str = "rmw"
     tigon_protocol: str = "TwoPL"
     tigon_partitions: int | None = None

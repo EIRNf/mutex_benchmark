@@ -346,35 +346,6 @@ python3 -m scripts.main 8 1 5 \
 | `-a` / `--all` | (removed; default is champions set) | |
 | `--info/--warning/--error/--critical` | `-l INFO/WARNING/ERROR/CRITICAL` | |
 
-## Damer MoE KV-cache movement (`--bench damer_moe`)
-
-Measures lock throughput on a mixture-of-experts workload whose KV-cache
-movements come from [Damer](../Damer). `scripts/damer_moe_plan.py` compiles each
-event of Damer's `examples/workloads/moe_alltoall_workload.json` (verifier must
-pass) and exports a movement plan (bytes, fragments, fanout, priority,
-output ratio). `apps/damer_moe_bench` then has every thread pick an event
-(weighted by priority) and move an expert's KV slot while holding the mutex
-under test. The per-thread CSV is `thread,seconds,count`.
-
-```bash
-python3 -m scripts.main 8 5 3 \
-  --bench damer_moe --capture throughput --sweep threads 1 8 1 \
-  -s champions --moe-movement fused --moe-granularity expert
-```
-
-| Flag | Meaning |
-|---|---|
-| `--damer-root`, `--moe-workload` | Damer checkout (default `../Damer`) and workload JSON |
-| `--moe-experts N` | number of expert KV slots (one lock each) |
-| `--moe-granularity expert\|global` | per-expert locks or a single lock |
-| `--moe-movement fused\|staged` | Damer single-pass movement vs separate copy/transform/writeback baseline |
-| `--moe-count events\|tokens` | throughput unit (tokens = bytes / 8 KiB) |
-| `--moe-kv-scale F` | scale applied to Damer byte sizes (default 1/64) |
-
-Movement is real host-memory copying (NUMA/CXL placement follows `--alloc`);
-Damer's modeled data-movement speedup is printed by the exporter for reference
-only and is not a measurement.
-
 ## Performance Measurement (single-lock, no Python pipeline)
 
 The benchmark binary can be driven directly for quick throughput and

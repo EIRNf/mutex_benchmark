@@ -72,9 +72,7 @@ def get_data_file_name(mutex_name, i, **iter_kwargs):
         alloc_tag = "-cxl-sw"
 
     bench_tag = Constants.bench
-    if Constants.bench == "damer_moe":
-        bench_tag += f"-{Constants.moe_movement}-{Constants.moe_granularity}-{Constants.moe_count}"
-    elif Constants.bench.startswith("tigon"):
+    if Constants.bench.startswith("tigon"):
         variant = Constants.bench_variant
         if Constants.tigon_partitions is None:
             threads = iter_kwargs.get("threads", Constants.bench_n_threads)
@@ -186,24 +184,6 @@ def get_command(mutex_name, *, threads=None, csv=True, thread_level=False, criti
                 f"zipf={Constants.tigon_zipf:g}",
             ])
         logger.info("Tigon run configuration: %s", " ".join(run_details))
-        logger.debug(f"Bench command: {cmd}")
-        return cmd
-
-    if Constants.bench == "damer_moe":
-        cmd = [
-            Constants.executable,
-            mutex_name,
-            str(threads),
-            str(Constants.bench_n_seconds),
-            "--csv",
-            "--thread-level",
-            "--plan", Constants.Defaults.MOE_PLAN_PATH,
-            "--experts", str(Constants.moe_experts),
-            "--granularity", Constants.moe_granularity,
-            "--movement", Constants.moe_movement,
-            "--count", Constants.moe_count,
-            "--kv-scale", str(Constants.moe_kv_scale),
-        ]
         logger.debug(f"Bench command: {cmd}")
         return cmd
 

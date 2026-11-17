@@ -3,7 +3,6 @@ from .logger import logger
 
 import subprocess
 import os
-import sys
 
 def setup():
     # Make sure the script is being run from the right location (in mutex_benchmark directory)
@@ -52,18 +51,6 @@ def build():
 
     _run_checked(configure_command, "Meson configuration failed.")
     _run_checked("meson compile -C build".split(), "Meson compilation failed.")
-
-    if Constants.bench == "damer_moe":
-        export_cmd = [
-            sys.executable, "scripts/damer_moe_plan.py",
-            "--out", Constants.Defaults.MOE_PLAN_PATH,
-        ]
-        if Constants.damer_root:
-            export_cmd += ["--damer-root", Constants.damer_root]
-        if Constants.moe_workload:
-            export_cmd += ["--workload", Constants.moe_workload]
-        logger.info("Exporting Damer MoE movement plan...")
-        _run_checked(export_cmd, "Damer MoE plan export failed.")
 
     if Constants.bench.startswith("tigon"):
         logger.info("Building Tigon benchmark suite...")

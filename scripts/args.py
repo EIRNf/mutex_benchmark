@@ -207,14 +207,6 @@ def _validate_context(args, parser):
     if args.bench.startswith("tigon") and args.capture != "throughput":
         parser.error(f"--bench {args.bench} currently supports --capture throughput")
 
-    if args.bench == "damer_moe":
-        if args.capture != "throughput":
-            parser.error("--bench damer_moe currently supports --capture throughput")
-        if args.moe_experts < 1:
-            parser.error("--moe-experts must be >= 1")
-        if args.moe_kv_scale <= 0:
-            parser.error("--moe-kv-scale must be > 0")
-
     if args.capture == "latency":
         if args.variability:
             parser.error("--variability only applies to --capture throughput sweeps")
@@ -291,7 +283,7 @@ def init_args():
     run_group = parser.add_argument_group("run options (what executes)")
     run_group.add_argument(
         "--bench",
-        choices=("max", "min", "grouped", "tigon", "tigon_ycsb", "tigon_tpcc", "damer_moe"),
+        choices=("max", "min", "grouped", "tigon", "tigon_ycsb", "tigon_tpcc"),
         default="max",
         help="benchmark executable to run",
     )
@@ -328,41 +320,6 @@ def init_args():
     run_group.add_argument("--tigon-zipf", type=float, help="YCSB Zipf skew (default: 0, uniform)")
     run_group.add_argument("--tigon-neworder-dist", type=int, help="TPC-C new-order cross-partition probability, 0-100 (default: 10)")
     run_group.add_argument("--tigon-payment-dist", type=int, help="TPC-C payment cross-partition probability, 0-100 (default: 15)")
-    run_group.add_argument(
-        "--damer-root",
-        default=None,
-        help="Damer checkout used to compile the MoE workload (damer_moe only; default ../Damer)",
-    )
-    run_group.add_argument(
-        "--moe-workload",
-        default=None,
-        help="Damer workload JSON, absolute or relative to --damer-root (damer_moe only)",
-    )
-    run_group.add_argument("--moe-experts", type=int, default=8, help="expert KV slots (damer_moe only)")
-    run_group.add_argument(
-        "--moe-granularity",
-        choices=("expert", "global"),
-        default="expert",
-        help="one lock per expert KV slot or a single global lock (damer_moe only)",
-    )
-    run_group.add_argument(
-        "--moe-movement",
-        choices=("fused", "staged"),
-        default="fused",
-        help="Damer-fused single-pass movement vs staged baseline (damer_moe only)",
-    )
-    run_group.add_argument(
-        "--moe-count",
-        choices=("events", "tokens"),
-        default="events",
-        help="throughput unit recorded per thread (damer_moe only)",
-    )
-    run_group.add_argument(
-        "--moe-kv-scale",
-        type=float,
-        default=1.0 / 64.0,
-        help="scale applied to Damer event byte sizes to fit memory (damer_moe only)",
-    )
     run_group.add_argument(
         "--sweep",
         nargs=4,
@@ -576,13 +533,6 @@ def init_args():
                 f"zipf-{Constants.tigon_zipf:g}",
             ])
         Constants.bench_variant = "-" + "-".join(variant_parts)
-    Constants.damer_root = args.damer_root
-    Constants.moe_workload = args.moe_workload
-    Constants.moe_experts = args.moe_experts
-    Constants.moe_granularity = args.moe_granularity
-    Constants.moe_movement = args.moe_movement
-    Constants.moe_count = args.moe_count
-    Constants.moe_kv_scale = args.moe_kv_scale
     Constants.groups = args.groups
     Constants.stdev_scale = args.stdev
     Constants.executable = _resolve_executable_for_bench(args.bench)
