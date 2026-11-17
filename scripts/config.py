@@ -1,15 +1,20 @@
 """Experiment configuration: one schema shared by TOML files and the flag CLI.
 
 An ExperimentConfig describes a single experiment (one benchmark, one lock
-list, one optional sweep, one memory placement). It can be built three ways,
-all of which go through the same validation:
+list, one optional sweep, one memory placement) independent of where its
+results go. It can be built three ways, all of which go through the same
+validation:
 
   * load_config(path, overrides)      -- a TOML file plus ``-o key=value``
   * load_config(None, overrides)      -- defaults plus overrides only
   * scripts.args.config_from_args()   -- the legacy flag CLI
 
-apply_to_constants() then copies a validated config onto the global
-``Constants`` object that the builder, runner, dataloader and plotter read.
+Where results go is a RunPaths, chosen by the entry point: a fresh run folder
+(``RunPaths.for_new_run``), an existing one to re-plot
+(``RunPaths.for_existing_run``), or the flag CLI's flat folders
+(``RunPaths.legacy``). apply_to_constants() copies a validated config and its
+paths onto the global ``Constants`` object that the builder, runner,
+dataloader and plotter read.
 
 Error messages name settings by their config key in backticks (for example
 `tigon.query`); the flag CLI rewrites those keys to flag names before printing.
@@ -21,6 +26,7 @@ import copy
 import logging
 import math
 import os
+import re
 import shutil
 import sys
 import tomllib
@@ -132,9 +138,6 @@ class Plot:
 
 @dataclass
 class Output:
-    data_folder: str = Constants.Defaults.DATA_FOLDER  # relative to the repo root
-    log_folder: str = Constants.Defaults.LOGS_FOLDER
-    reuse_data: bool = False
     log_level: str = "INFO"
 
 
@@ -157,6 +160,97 @@ class ExperimentConfig:
     @property
     def is_tigon(self) -> bool:
         return self.bench.startswith("tigon")
+
+
+# --------------------------------------------------------------------------
+# Where an experiment's results go.
+# --------------------------------------------------------------------------
+
+RUNS_ROOT = "./data/runs"
+CONFIG_FILE = "config.toml"
+RECORD_FILE = "run.json"
+_TIMESTAMP_DIR = re.compile(r"^\d{8}T\d{6}\d*$")
+
+
+def _timestamp() -> str:
+    return datetime.now().strftime("%Y%m%dT%H%M%S%f")
+
+
+@dataclass
+class RunPaths:
+    data: str                    # CSVs
+    plots: str                   # figures and speedup tables
+    logs: str
+    run_dir: str | None = None   # holds config.toml and run.json
+    reuse: bool = False          # plot existing data instead of running
+
+    @classmethod
+    def for_new_run(cls, name: str, run_dir: str | None = None, root: str = RUNS_ROOT):
+        """A fresh self-describing run folder: config.toml, run.json, raw/, plots/, logs/."""
+        if run_dir is None:
+            run_dir = os.path.join(root, f"{_timestamp()}-{name}")
+        elif os.path.exists(os.path.join(run_dir, CONFIG_FILE)):
+            raise ConfigError(f"{run_dir} already holds a run; choose another directory")
+        return cls(
+            data=os.path.join(run_dir, "raw"),
+            plots=os.path.join(run_dir, "plots"),
+            logs=os.path.join(run_dir, "logs"),
+            run_dir=run_dir,
+        )
+
+    @classmethod
+    def for_existing_run(cls, run_dir: str):
+        """Re-plot a recorded run (new layout, or a flag-CLI data folder with config.toml)."""
+        if not os.path.isfile(os.path.join(run_dir, CONFIG_FILE)):
+            raise ConfigError(f"{run_dir} has no {CONFIG_FILE}; it was not recorded as a run")
+        if os.path.isdir(os.path.join(run_dir, "raw")):
+            return cls(
+                data=os.path.join(run_dir, "raw"),
+                plots=os.path.join(run_dir, "plots"),
+                logs=os.path.join(run_dir, "logs"),
+                run_dir=run_dir,
+                reuse=True,
+            )
+        return cls(
+            data=run_dir,
+            plots=os.path.normpath(os.path.join(run_dir, "..", "figs")),
+            logs=Constants.Defaults.LOGS_FOLDER,
+            run_dir=run_dir,
+            reuse=True,
+        )
+
+    @classmethod
+    def legacy(cls, data_folder: str, log_folder: str, reuse: bool,
+               default_root: str = Constants.Defaults.DATA_FOLDER):
+        """The flag CLI's layout: CSVs in data_folder, figures in data_folder/../figs.
+
+        With the default data folder, new runs get a timestamped subfolder and
+        --reuse-data picks the newest such subfolder that holds CSVs.
+        """
+        if data_folder == default_root:
+            if reuse:
+                data_folder = _newest_timestamped_run(default_root)
+            else:
+                data_folder = os.path.join(default_root, _timestamp())
+        return cls(
+            data=data_folder,
+            plots=os.path.normpath(os.path.join(data_folder, "..", "figs")),
+            logs=log_folder,
+            run_dir=None if reuse else data_folder,
+            reuse=reuse,
+        )
+
+
+def _newest_timestamped_run(root: str) -> str:
+    try:
+        names = sorted((n for n in os.listdir(root) if _TIMESTAMP_DIR.match(n)), reverse=True)
+    except OSError:
+        names = []
+    for name in names:
+        candidate = os.path.join(root, name)
+        if any(entry.endswith(".csv") for entry in os.listdir(candidate)):
+            return candidate
+    raise ConfigError(f"no previous runs with CSV data under {root}; pass the run's data folder")
 
 
 # --------------------------------------------------------------------------
@@ -577,8 +671,10 @@ def tigon_warmup_seconds(cfg_seconds: float, warmup: int | None) -> int:
     return warmup if warmup is not None else min(1, run_seconds - 1)
 
 
-def apply_to_constants(cfg: ExperimentConfig):
-    """Copy a validated config onto Constants (the pipeline's global state)."""
+def apply_to_constants(cfg: ExperimentConfig, paths: RunPaths | None = None):
+    """Copy a validated config and its output paths onto Constants."""
+    if paths is None:
+        paths = RunPaths.legacy(Constants.Defaults.DATA_FOLDER, Constants.Defaults.LOGS_FOLDER, False)
     C = Constants
     C.experiment_name = cfg.name
     C.mutex_names = resolve_lock_names(cfg.locks)
@@ -599,12 +695,11 @@ def apply_to_constants(cfg: ExperimentConfig):
         C.iter_variable_name = cfg.sweep.var
         C.iter_range = [cfg.sweep.start, cfg.sweep.stop + 1, cfg.sweep.step]  # inclusive
 
-    data_folder = cfg.output.data_folder
-    if not cfg.output.reuse_data and data_folder == C.Defaults.DATA_FOLDER:
-        data_folder = os.path.join(data_folder, datetime.now().strftime("%Y%m%dT%H%M%S%f"))
-    C.data_folder = data_folder
-    C.logs_folder = cfg.output.log_folder
-    C.skip_experiment = cfg.output.reuse_data
+    C.data_folder = paths.data
+    C.figs_folder = paths.plots
+    C.logs_folder = paths.logs
+    C.run_dir = paths.run_dir
+    C.skip_experiment = paths.reuse
 
     w = cfg.workload
     C.groups = w.groups

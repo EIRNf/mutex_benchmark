@@ -1,8 +1,11 @@
 from .constants import *
 from .logger import logger
 
+import json
 import subprocess
 import os
+
+BUILD_DIR = "build"
 
 def setup():
     # Make sure the script is being run from the right location (in mutex_benchmark directory)
@@ -18,12 +21,47 @@ def _run_checked(command, error_message):
         raise RuntimeError(error_message)
 
 
+def prepare_output_dirs():
+    """Create the folders the configured run reads from or writes to."""
+    for folder in (Constants.data_folder, Constants.figs_folder, Constants.logs_folder):
+        os.makedirs(folder, exist_ok=True)
+
+
+def configured_cpp_args(build_dir=BUILD_DIR):
+    """The cpp_args a Meson build directory was configured with, or None."""
+    try:
+        with open(os.path.join(build_dir, "meson-info", "intro-buildoptions.json"), encoding="utf-8") as handle:
+            options = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    for option in options:
+        if option.get("name") == "cpp_args":
+            return list(option.get("value") or [])
+    return []
+
+
+def verify_build_matches(build_dir=BUILD_DIR):
+    """Fail if the build directory was configured for a different placement mode.
+
+    Matters when MUTEX_BENCH_SKIP_BUILD=1 reuses an existing build: a malloc
+    build cannot honor placement = "locks", and a hardware_cxl build would
+    place lock memory when it should not.
+    """
+    cpp_args = configured_cpp_args(build_dir)
+    if cpp_args is None:
+        raise RuntimeError(f"{build_dir}/ is not a configured Meson build; build without MUTEX_BENCH_SKIP_BUILD")
+    built_for_locks = "-Dhardware_cxl" in cpp_args
+    if built_for_locks != bool(Constants.hardware_cxl):
+        built = "with" if built_for_locks else "without"
+        raise RuntimeError(
+            f"{build_dir}/ is configured {built} -Dhardware_cxl, which does not match "
+            f"placement = {Constants.placement!r}; rebuild (unset MUTEX_BENCH_SKIP_BUILD)"
+        )
+    return cpp_args
+
+
 def build():
-    os.makedirs("build", exist_ok=True)
-    os.makedirs("data", exist_ok=True)
-    os.makedirs(Constants.Defaults.DATA_FOLDER, exist_ok=True)
-    os.makedirs(Constants.data_folder, exist_ok=True)
-    os.makedirs(Constants.Defaults.LOGS_FOLDER, exist_ok=True)
+    os.makedirs(BUILD_DIR, exist_ok=True)
 
     if os.environ.get("MUTEX_BENCH_SKIP_BUILD") == "1":
         logger.info("Skipping build because MUTEX_BENCH_SKIP_BUILD=1")

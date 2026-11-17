@@ -10,6 +10,7 @@ import re
 from .config import (
     PLACEMENTS,
     ConfigError,
+    RunPaths,
     ExperimentConfig,
     LockSelection,
     Memory,
@@ -55,9 +56,6 @@ _CLI_FLAGS = {
     "plot.heatmap_ref": "--heatmap-ref",
     "plot.stdev": "--stdev",
     "plot.averages": "--averages",
-    "output.data_folder": "--data-folder",
-    "output.log_folder": "--log-folder",
-    "output.reuse_data": "--reuse-data",
     "output.log_level": "--log",
 }
 _CLI_PHRASES = {"plot.heatmap = false": "--no-heatmap"}
@@ -159,12 +157,7 @@ def config_from_args(args) -> ExperimentConfig:
             stdev=args.stdev,
             averages=args.averages,
         ),
-        output=Output(
-            data_folder=args.data_folder,
-            log_folder=args.log_folder,
-            reuse_data=args.reuse_data,
-            log_level=args.log,
-        ),
+        output=Output(log_level=args.log),
     )
     validate(cfg)
     return cfg
@@ -253,7 +246,7 @@ def build_parser():
         "--reuse-data",
         action="store_true",
         default=False,
-        help="reuse previous CSV files instead of rerunning benchmarks",
+        help="re-plot existing CSVs instead of running (default folder: the newest run under data/generated)",
     )
     capture_group.add_argument(
         "--data-folder",
@@ -358,14 +351,21 @@ def build_parser():
 
 
 def init_args(argv=None):
-    """Parse legacy flags, validate them, and load them into Constants."""
+    """Parse legacy flags, validate them, and load them into Constants.
+
+    Returns the ExperimentConfig. Folders keep the flag CLI's layout: CSVs in
+    --data-folder (a timestamped subfolder of the default), figures in
+    ../figs, and config.toml + run.json beside the CSVs.
+    """
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
         cfg = config_from_args(args)
-        check_host(cfg)
+        if not args.reuse_data:
+            check_host(cfg)
+        paths = RunPaths.legacy(args.data_folder, args.log_folder, args.reuse_data)
     except ConfigError as exc:
         parser.error(render_for_cli(str(exc)))
-    apply_to_constants(cfg)
+    apply_to_constants(cfg, paths)
     logger.debug(Constants.data_folder)
-    return args
+    return cfg

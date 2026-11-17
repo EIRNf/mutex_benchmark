@@ -152,7 +152,7 @@ def get_savefig_filepath(suffix=""):
         f"-r{Constants.n_program_iterations}"
     )
 
-    figs_dir = os.path.join(Constants.data_folder, "..", "figs")
+    figs_dir = Constants.figs_folder
     os.makedirs(figs_dir, exist_ok=True)
     base = f"{figs_dir}/{ts}-{bench}-{capture}{sweep_part}-{run_part}-{alloc}"
 
@@ -724,7 +724,7 @@ def print_speedup_table(data):
     print(table_str)
 
     # ── Save to file ───────────────────────────────────────────
-    figs_dir = os.path.join(Constants.data_folder, "..", "figs")
+    figs_dir = Constants.figs_folder
     os.makedirs(figs_dir, exist_ok=True)
     from datetime import datetime
     ts = datetime.now().strftime("%Y%m%d%H%M%S")

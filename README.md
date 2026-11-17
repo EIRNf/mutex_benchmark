@@ -29,6 +29,28 @@ python3 -m scripts run -o capture=throughput -o locks.include=spin,mcs \
 python3 -m scripts run experiments/max_threads.toml --print-config        # check, don't run
 ```
 
+Each run gets its own folder, `data/runs/<timestamp>-<name>/` (or `--dir DIR`):
+
+| Path | Contents |
+|---|---|
+| `config.toml` | the fully resolved config; `python -m scripts run <it>` repeats the experiment |
+| `run.json` | status (`running`, `complete`, `failed`, `interrupted`), timing, command, git commit and dirty flag, host and `numactl --hardware`, resolved lock list, build flags, and how many data points were written (missing ones are listed) |
+| `raw/` | CSVs |
+| `plots/` | figures and speedup tables |
+| `logs/` | debug logs |
+
+Re-plot a recorded run without re-running or repeating any flags; only
+`plot.*` settings can change:
+
+```bash
+python3 -m scripts plot data/runs/<run-folder>
+python3 -m scripts plot data/runs/<run-folder> -o plot.layout=combined -o plot.speedup=ticket
+```
+
+Before running, the build is checked against the placement: a build
+configured without `-Dhardware_cxl` cannot run `placement = "locks"` (and the
+reverse), which matters when `MUTEX_BENCH_SKIP_BUILD=1` reuses `build/`.
+
 `-o KEY=VALUE` sets any setting by its dotted key and wins over the file.
 Values are read as TOML (`-o plot.show=true`, `-o seconds=2.5`); bare words are
 strings, and list settings accept commas (`-o locks.include=spin,mcs`). Unknown
@@ -47,7 +69,7 @@ resolved config, which is also a good starting point for a new file.
 | `[workload]` `groups`, `critical_delay`, `noncritical_delay`, `stagger_ms` | per-benchmark knobs |
 | `[tigon]` `query`, `protocol`, `partitions`, `partition_ratio`, `warmup_seconds`, `read_write_ratio`, `read_only_ratio`, `cross_ratio`, `cross_partitions`, `keys`, `zipf`, `neworder_dist`, `payment_dist` | Tigon workload (Tigon benches only) |
 | `[plot]` `layout`, `show`, `scatter`, `max_points`, `variability`, `speedup`, `heatmap`, `heatmap_ref`, `stdev`, `averages` | plotting |
-| `[output]` `data_folder`, `log_folder`, `reuse_data`, `log_level` | where results go; paths are relative to the repo root |
+| `[output]` `log_level` | console log level (`INFO`) |
 
 **Memory placement** (`[memory]`, or `--placement`/`--numa-node` on the flag CLI):
 
@@ -64,8 +86,11 @@ and figure names carry `cxl-hw-nodeN` (`locks`) or `membind-nodeN` (`process`).
 
 ### Flag CLI (`python -m scripts.main`)
 
-The flag CLI builds the same config and runs the same validation. It is
-organised into four domain groups. Every group has a primary enum
+The flag CLI builds the same config and runs the same validation. It keeps
+its flat layout: CSVs in `--data-folder` (by default a new timestamped folder
+under `data/generated/`) with `config.toml` and `run.json` beside them, and
+figures in the folder's `../figs`. `--reuse-data` with the default folder
+re-plots the newest run that has data. It is organised into four domain groups. Every group has a primary enum
 selector; domain-specific flags only apply within their context.
 
 | Group | Primary selector | Controls |
@@ -147,6 +172,8 @@ python3 -m scripts.main 8 5 3 \
   -s combined_cxl \
   --reuse-data
 ```
+This re-plots the newest run under `data/generated/`. For runs made with
+`python -m scripts run`, use `python -m scripts plot <run-folder>` instead.
 
 **Min benchmark sweep:**
 ```bash

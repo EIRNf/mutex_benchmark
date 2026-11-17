@@ -374,6 +374,8 @@ class Constants:
     iter: bool
     rusage: bool
     experiment_name: str = ""
+    figs_folder: str = "./data/figs"
+    run_dir: str | None = None   # folder holding config.toml/run.json
     placement: str = "none"   # none | process | locks (see scripts/config.py)
     hardware_cxl: bool = False  # placement == "locks": -Dhardware_cxl build
     numa_node: int | None = None

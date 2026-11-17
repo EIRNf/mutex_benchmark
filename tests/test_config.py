@@ -34,8 +34,6 @@ stop = 8
 step = 1
 [plot]
 layout = "none"
-[output]
-data_folder = "./tmp-config-test-data"
 """
 
 
