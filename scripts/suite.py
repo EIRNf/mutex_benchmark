@@ -392,6 +392,15 @@ def load_suite(path: str, overrides=()) -> Suite:
         raise ConfigError(f"{path}: {exc}") from None
 
 
+def run_matches(patterns, key: str, experiment: str, environment: str | None) -> bool:
+    """--only: a run matches a glob on its key, experiment or environment name."""
+    return any(
+        fnmatch.fnmatchcase(name, pattern)
+        for pattern in patterns
+        for name in (key, experiment, environment or "")
+    )
+
+
 def run_folder(suite_dir: str, run: PlannedRun) -> str:
     return os.path.join(suite_dir, *run.key.split("/"))
 
@@ -712,14 +721,10 @@ class SuiteRunner:
         patterns = self.options.only
         if not patterns:
             return list(self.suite.runs)
-
-        def matches(run, pattern):
-            return any(
-                fnmatch.fnmatchcase(name, pattern)
-                for name in (run.key, run.experiment, run.environment or "")
-            )
-
-        chosen = [run for run in self.suite.runs if any(matches(run, p) for p in patterns)]
+        chosen = [
+            run for run in self.suite.runs
+            if run_matches(patterns, run.key, run.experiment, run.environment)
+        ]
         if not chosen:
             examples = ", ".join(run.key for run in self.suite.runs[:3])
             raise ConfigError(f"no runs match --only {' '.join(patterns)}; runs are named like {examples}")

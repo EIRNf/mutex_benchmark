@@ -4,6 +4,7 @@
     python -m scripts plot  RUN_DIR [-o plot.KEY=VALUE ...]
     python -m scripts suite SUITE.toml [-o KEY=VALUE ...] [--list] [--only GLOB ...]
     python -m scripts suite --resume SUITE_DIR
+    python -m scripts compare SUITE_DIR [--by environment|experiment] [--baseline NAME]
 
 ``run`` executes one experiment into a new run folder (default
 data/runs/<timestamp>-<name>/) holding config.toml, run.json, raw/, plots/
@@ -17,6 +18,10 @@ Only plot.* settings (and output.log_level) can be overridden there.
 ``suite`` runs a set of distinct experiments (see scripts/suite.py), each in
 its own run folder under data/suites/<timestamp>-<name>/, and can resume a
 suite that stopped part way.
+
+``compare`` plots a suite's runs against each other (see scripts/compare.py):
+each experiment across environments, or the experiments within each
+environment, into SUITE_DIR/compare/.
 
 The flag CLI (``python -m scripts.main THREADS SECONDS REPS ...``) still works
 and shares the same validation.
@@ -128,6 +133,33 @@ def _build_parser():
         action="store_true",
         help="stop at the first failed run (default: carry on with the rest)",
     )
+
+    compare = commands.add_parser(
+        "compare",
+        help="compare the runs of a suite",
+        description="Plot a suite's runs against each other: each experiment across environments "
+                    "(the default when the suite has several), or the experiments within each "
+                    "environment. Writes figures and CSVs to SUITE_DIR/compare/.",
+    )
+    compare.add_argument("suite_dir", help="suite folder (data/suites/<timestamp>-<name>)")
+    compare.add_argument(
+        "--by",
+        choices=["environment", "experiment"],
+        help="what to compare (default: environment when the suite has two or more)",
+    )
+    compare.add_argument(
+        "--baseline",
+        metavar="NAME",
+        help="environment (or experiment) the others are divided by (default: the first)",
+    )
+    compare.add_argument(
+        "--only",
+        action="append",
+        default=[],
+        metavar="GLOB",
+        help="compare only runs whose key, experiment or environment matches; repeatable",
+    )
+    compare.add_argument("--out", metavar="DIR", help="output folder (default: SUITE_DIR/compare)")
     return parser
 
 
@@ -225,7 +257,27 @@ def _suite(parser, ns):
     if code != 0:
         print(f"Some runs did not complete. Resume with: python -m scripts suite --resume {suite_dir}",
               file=sys.stderr)
+    if len(suite.environments) >= 2:
+        print(f"Compare environments with: python -m scripts compare {suite_dir}")
     return code
+
+
+def _compare(parser, ns):
+    suite_dir = os.path.abspath(ns.suite_dir)
+    out_dir = os.path.abspath(ns.out) if ns.out else None
+    setup()
+    from .compare import compare_suite  # imports the plotting stack
+    try:
+        result = compare_suite(suite_dir, by=ns.by, baseline=ns.baseline, only=ns.only, out_dir=out_dir)
+    except ConfigError as exc:
+        parser.error(str(exc))
+    for note in result.notes:
+        print(f"note: {note}", file=sys.stderr)
+    print(f"Compared by {result.by} against {result.baseline}: "
+          f"{len(result.groups)} group(s): {', '.join(group.name for group in result.groups)}")
+    for path in result.written:
+        print(f"  {path}")
+    return 0
 
 
 def main(argv=None):
@@ -237,6 +289,8 @@ def main(argv=None):
         return _plot(parser, ns)
     if ns.command == "suite":
         return _suite(parser, ns)
+    if ns.command == "compare":
+        return _compare(parser, ns)
     parser.error(f"unknown command {ns.command!r}")  # pragma: no cover
 
 

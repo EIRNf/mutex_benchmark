@@ -159,11 +159,43 @@ The runner:
   Unattended suites need `sudo` not to prompt mid-run (for example a
   `NOPASSWD` rule for `setpci`).
 
+A suite with two or more environments ends by printing the `compare` command
+for its folder (see below).
+
 `--resume` continues a suite from its folder (`suite.json` and the prepared
 run configs), never the original file: complete runs are skipped, and an
 unfinished run's folder is moved to `<run>.attempt-N` before it reruns.
 `--only GLOB` (repeatable) selects runs by key, experiment or environment
 name, such as `cxl/*`, `max` or `dram`.
+
+### Comparing runs (`python -m scripts compare`)
+
+`compare` plots a suite's runs against each other. With two or more
+environments it compares each experiment across them (DRAM vs CXL for the
+same lock); `--by experiment` instead compares the experiments within each
+environment, for example Tigon's partition ratios.
+
+```bash
+python3 -m scripts compare data/suites/<suite-folder>
+python3 -m scripts compare data/suites/<suite-folder> --baseline cxl --only max
+python3 -m scripts compare data/suites/<suite-folder> --by experiment --only 'cxl/tigon_ycsb-*'
+```
+
+It writes to `<suite-folder>/compare/` (or `--out DIR`), replacing earlier
+output:
+
+| File | Contents |
+|---|---|
+| `<group>-throughput.png` | one panel per lock, one line per environment (or experiment): mean and stdev over repetitions |
+| `<group>-vs-<baseline>.png` | per environment: mean throughput divided by the baseline's, per lock and sweep point (below 1 = slower) |
+| `<group>.csv` | the numbers behind both: `series`, `lock`, sweep value, `mean`, `std`, `n`, `ratio` |
+| `summary-vs-<baseline>.png`, `summary.csv` | geometric mean of those ratios over the sweep, per lock and experiment |
+
+The baseline is the first environment (or experiment) unless `--baseline`
+names another. Throughput is each run's total over all threads divided by its
+seconds, so runs of different lengths compare fairly. Only throughput sweeps
+are compared; runs that have not started are skipped, and runs that stopped
+early are included with the points they wrote. Both are reported as notes.
 
 ### Flag CLI (`python -m scripts.main`)
 
