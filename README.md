@@ -142,7 +142,8 @@ runs accept (such as `tigon.zipf`, YCSB only) belongs in the suite file.
 
 The suite folder, `data/suites/<timestamp>-<name>/` (or `--dir`), holds
 `suite.toml` (the file as given), `suite.json` (the plan, each run's status,
-and each session), and one run folder per run at `<environment>/<experiment>/`.
+and each session), `suite.log` (everything the runner printed, timestamped),
+and one run folder per run at `<environment>/<experiment>/`.
 The runner:
 
 - joins the suite's `cgroup`, if set (writing its PID to `cgroup.procs` with
@@ -150,14 +151,32 @@ The runner:
   suite before anything runs;
 - builds each needed build folder once, before the first run (`--no-build`
   reuses them; each run still checks its build);
-- runs each experiment as its own `python -m scripts run` process, so a failed
-  run is recorded and the suite carries on (`--stop-on-failure` stops instead);
+- runs each experiment as its own `python -m scripts run` process;
 - sets the CXL latency with `setpci` (under `sudo`) before each environment
   that names one, returns to the original value for environments that don't,
-  and restores it when the suite ends, including on Ctrl-C or SIGTERM. Each
-  run's `run.json` records its environment and latency under `suite`.
-  Unattended suites need `sudo` not to prompt mid-run (for example a
-  `NOPASSWD` rule for `setpci`).
+  and restores it when the suite ends, including on Ctrl-C or SIGTERM. The
+  original value is read before building, so a `sudo` prompt comes while you
+  are still at the terminal. Each run's `run.json` records its environment
+  and latency under `suite`. Unattended suites need `sudo` not to prompt
+  mid-run (for example a `NOPASSWD` rule for `setpci`).
+
+One run's trouble does not stop the suite. Each problem is printed as a
+`==> WARNING:` line (also in `suite.log`; `grep WARNING suite.log` lists
+them), recorded in `suite.json`, and the suite carries on:
+
+| What happens | Result |
+|---|---|
+| a benchmark execution crashes or exits non-zero | that point is skipped (its output is saved as `logs/<point>.failed.txt`) and the run goes on; a run where every execution failed is `failed` |
+| a benchmark execution hangs | killed after 10x its expected time plus 15 s (at least 30 s); that point is skipped |
+| a run fails, or its process is killed (an OOM kill shows as SIGKILL) | the run is `failed` with the reason; the next run starts |
+| Ctrl-C during a run | that run is `interrupted`; the suite waits 5 s and starts the next one |
+| Ctrl-C again within those 5 s, or SIGTERM | the whole suite stops, restoring the CXL latency |
+| the CXL latency cannot be set (e.g. `sudo` timed out) | that environment's runs are `skipped`, not run at the wrong latency |
+
+`--stop-on-failure` instead stops at the first run that does not complete.
+Runs that did not complete (including skipped ones) rerun with `--resume`.
+A complete run with missing points stays complete; its `run.json` lists the
+missing points.
 
 A suite with two or more environments ends by printing the `compare` command
 for its folder (see below).

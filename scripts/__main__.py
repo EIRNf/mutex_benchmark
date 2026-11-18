@@ -181,7 +181,12 @@ def _run(parser, ns):
 
     run = resolve_run(cfg, paths, build_dir=build_dir, skip_build=True if ns.no_build else None)
     from .main import run_configured  # imports plotting stack; keep --print-config light
-    run_configured(run)
+    try:
+        run_configured(run)
+    except KeyboardInterrupt:
+        print(f"\nInterrupted; {paths.run_dir}/run.json lists the data points written so far",
+              file=sys.stderr)
+        return 130
     print(f"Run folder: {paths.run_dir}")
     return 0
 

@@ -32,12 +32,19 @@ vary < the environment's memory < command-line overrides. ``vary`` expands
 one entry into one experiment per value (per combination for several keys).
 
 Running a suite creates data/suites/<timestamp>-<name>/ with suite.toml (the
-file as given), suite.json (the plan and each run's status) and one prepared
-run folder per run at <environment>/<experiment>/. It builds each needed
-build folder once, then runs every experiment as its own
-``python -m scripts run`` process, so a failed or crashed run does not take
-the others down. A suite folder can be resumed: complete runs are skipped,
-and an unfinished run's folder is moved aside to <run>.attempt-N first.
+file as given), suite.json (the plan and each run's status), suite.log
+(everything the runner printed, timestamped) and one prepared run folder per
+run at <environment>/<experiment>/. It builds each needed build folder once,
+then runs every experiment as its own ``python -m scripts run`` process.
+
+One run's trouble does not stop the others. A run that fails, crashes, is
+killed or is interrupted with Ctrl-C is recorded, a WARNING line says so, and
+the suite carries on with the next run; Ctrl-C again within a few seconds
+(or SIGTERM at any time) stops the whole suite. If the CXL latency cannot be
+set for an environment, that environment's runs are skipped rather than run
+at the wrong latency. A suite folder can be resumed: complete runs are
+skipped, and an unfinished run's folder is moved aside to <run>.attempt-N
+first.
 """
 
 from __future__ import annotations
@@ -52,6 +59,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 import tomllib
 from dataclasses import dataclass, field, fields
 from difflib import get_close_matches
@@ -80,10 +88,12 @@ from .rundir import (
     utc_now,
     write_json_atomic,
 )
+from .runner import _format_return_code
 
 SUITES_ROOT = "./data/suites"
 SUITE_FILE = "suite.toml"
 SUITE_RECORD = "suite.json"
+SUITE_LOG = "suite.log"
 DEFAULT_LATENCY_REGISTER = "0xe08.l"
 
 _SUITE_KEYS = ("name", "cgroup", "defaults", "environments", "experiments", "latency_control")
@@ -94,6 +104,7 @@ _BDF = re.compile(r"^([0-9A-Fa-f]{4}:)?[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}\.[0-7]$")
 _REGISTER = re.compile(r"^(0x)?[0-9A-Fa-f]+\.[bwl]$")
 _HEX_VALUE = re.compile(r"^(?:0x)?([0-9A-Fa-f]{1,8})$")
 _CHILD_EXIT_GRACE_SECONDS = 30
+_INTERRUPT_PAUSE_SECONDS = 5     # after a Ctrl-C'd run: time to press Ctrl-C again to stop
 
 
 # --------------------------------------------------------------------------
@@ -620,7 +631,14 @@ class LatencyControl:
 # --------------------------------------------------------------------------
 
 class SuiteTerminated(KeyboardInterrupt):
-    """SIGTERM, handled like Ctrl-C so host state is restored."""
+    """SIGTERM, handled like Ctrl-C so host state is restored; stops the suite."""
+
+
+class SuiteStopped(KeyboardInterrupt):
+    """Ctrl-C pressed again soon after interrupting a run; stops the suite.
+
+    A plain KeyboardInterrupt while a run is going interrupts only that run.
+    """
 
 
 def _raise_terminated(signum, frame):
@@ -640,6 +658,10 @@ def run_child(command: list[str], env: dict) -> int:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
+        except KeyboardInterrupt:  # pressed again while the run records itself
+            process.kill()
+            process.wait()
+            raise SuiteStopped() from None
         raise
 
 
@@ -652,7 +674,7 @@ class SuiteOptions:
 
 class SuiteRunner:
     def __init__(self, suite: Suite, suite_dir: str, options: SuiteOptions | None = None, *,
-                 child=run_child, setpci=None, cgroup_writer=None, out=None):
+                 child=run_child, setpci=None, cgroup_writer=None, out=None, sleep=time.sleep):
         self.suite = suite
         self._cgroup_writer = cgroup_writer or write_cgroup
         self.suite_dir = suite_dir
@@ -660,11 +682,24 @@ class SuiteRunner:
         self._child = child
         self._setpci = setpci
         self._out = out or sys.stdout
+        self._sleep = sleep
         self.record_path = os.path.join(suite_dir, SUITE_RECORD)
+        self.log_path = os.path.join(suite_dir, SUITE_LOG)
         self.record: dict = read_json(self.record_path) or {}
 
     def _print(self, message: str = ""):
+        """Print, and append to suite.log so the record outlives the terminal."""
         print(message, file=self._out, flush=True)
+        stamp = utc_now()
+        try:
+            with open(self.log_path, "a", encoding="utf-8") as log:
+                for line in message.splitlines() or [""]:
+                    log.write(f"{stamp} {line}\n" if line.strip() else "\n")
+        except OSError:
+            pass  # the log is a convenience; never let it stop the suite
+
+    def _warn(self, message: str):
+        self._print(f"==> WARNING: {message}")
 
     def _write(self):
         write_json_atomic(self.record_path, self.record)
@@ -777,18 +812,20 @@ class SuiteRunner:
                 self._join_cgroup(self.suite.cgroup)
                 session["cgroup_joined"] = self.suite.cgroup
                 self._print(f"==> Joined the cgroup of {self.suite.cgroup}; builds and runs inherit it")
-            self._build(pending, session)
             if self._needs_latency(pending):
                 latency = LatencyControl(self.suite.latency_control, self._setpci)
                 session["latency_original"] = latency.save_original()
                 self._write()
                 self._print(f"==> Saved CXL latency {latency.spec.register}={latency.original}; "
                             f"if this process is killed, restore it with: {latency.restore_command()}")
+            self._build(pending, session)
             self._run_pending(pending, latency)
             status = "complete" if all(self.status(run) == "complete" for run in self.suite.runs) \
                 else "incomplete"
-        except KeyboardInterrupt:
+        except KeyboardInterrupt as exc:
             status = "interrupted"
+            how = "SIGTERM" if isinstance(exc, SuiteTerminated) else "Ctrl-C"
+            self._warn(f"suite stopped ({how}); unfinished runs rerun with --resume")
             raise
         except BaseException as exc:
             session["error"] = f"{type(exc).__name__}: {exc}"
@@ -824,64 +861,157 @@ class SuiteRunner:
         total = len(pending)
         index = 0
         for env_name, group in itertools.groupby(pending, key=lambda run: run.environment):
+            group = list(group)
             env = self.suite.environment(env_name)
-            if latency is not None and env is not None:
-                if env.latency is not None:
-                    latency.apply(env.latency)
-                    self._print(f"==> Environment {env.name}: CXL latency set to {env.latency}")
-                else:
-                    latency.restore()
-                    self._print(f"==> Environment {env.name}: CXL latency at the host's setting ({latency.original})")
+            problem = self._enter_environment(env, latency)
+            if problem is not None:
+                # Running at the wrong latency would mislabel the data; skip instead.
+                for run in group:
+                    self._skip(run, problem)
+                index += len(group)
+                self._warn(f"skipped the {len(group)} run(s) of environment {env.name}: {problem}"
+                           + self._continuing(total - index))
+                if self.options.stop_on_failure:
+                    self._print("==> Stopping at the first failure (--stop-on-failure)")
+                    return
+                continue
             for run in group:
                 index += 1
-                ok = self._run_one(run, env, latency, index, total)
+                interrupted = self._run_one(run, env, latency, index, total)
+                remaining = total - index
+                ok = self._entry(run)["status"] == "complete"
+                self._report(run, remaining if ok or not self.options.stop_on_failure else 0)
                 if not ok and self.options.stop_on_failure:
                     self._print("==> Stopping at the first failure (--stop-on-failure)")
                     return
+                if interrupted and remaining:
+                    self._pause_after_interrupt()
 
-    def _run_one(self, run: PlannedRun, env: Environment | None, latency, index: int, total: int) -> bool:
-        folder = run_folder(self.suite_dir, run)
+    def _enter_environment(self, env: Environment | None, latency) -> str | None:
+        """Set the environment's CXL latency; on failure, the reason to skip its runs."""
+        if latency is None or env is None:
+            return None
+        target = env.latency if env.latency is not None else f"the host's setting ({latency.original})"
+        try:
+            if env.latency is not None:
+                latency.apply(env.latency)
+                self._print(f"==> Environment {env.name}: CXL latency set to {env.latency}")
+            else:
+                latency.restore()
+                self._print(f"==> Environment {env.name}: CXL latency at the host's setting ({latency.original})")
+        except Exception as exc:  # sudo timed out, setpci failed, readback mismatch, ...
+            return f"could not set the CXL latency to {target}: {exc}"
+        return None
+
+    def _skip(self, run: PlannedRun, reason: str):
         entry = self._entry(run)
-        if read_record(folder) is not None:  # an earlier attempt that did not complete
-            attempt = self._move_aside(folder)
-            entry.setdefault("attempts", []).append(os.path.relpath(attempt, self.suite_dir))
-            self._prepare_run_folder(run)
-            self._print(f"==> Earlier attempt of {run.key} moved to {attempt}")
-        entry["status"] = "running"
+        entry["status"] = "skipped"
+        entry["error"] = reason
+        entry.pop("data_points", None)
         self._write()
 
-        self._print(f"\n==> [{index}/{total}] {run.key}")
-        command = [
-            sys.executable, "-m", "scripts", "run", os.path.join(folder, CONFIG_FILE),
-            "--dir", folder, "--build-dir", run.build_dir, "--no-build",
-        ]
-        context = {"name": self.suite.name, "dir": self.suite_dir, "run": run.key,
-                   "cgroup": self.suite.cgroup,
-                   "environment": self._environment_context(env, latency)}
-        child_env = {**os.environ, SUITE_CONTEXT_ENV: json.dumps(context)}
-        code = None
+    def _pause_after_interrupt(self):
+        self._print(f"==> Continuing with the next run in {_INTERRUPT_PAUSE_SECONDS} s; "
+                    "press Ctrl-C again to stop the suite")
         try:
-            code = self._child(command, child_env)
-        finally:
-            self._record_result(entry, folder, code)
-        return entry["status"] == "complete"
+            self._sleep(_INTERRUPT_PAUSE_SECONDS)
+        except KeyboardInterrupt as exc:
+            if isinstance(exc, (SuiteTerminated, SuiteStopped)):
+                raise
+            raise SuiteStopped() from None
 
-    def _record_result(self, entry: dict, folder: str, code: int | None):
+    @staticmethod
+    def _continuing(remaining: int) -> str:
+        return f"; continuing with the remaining {remaining} run(s)" if remaining else ""
+
+    def _report(self, run: PlannedRun, remaining: int):
+        """One line per finished run; a WARNING for anything short of complete."""
+        entry = self._entry(run)
+        status = entry["status"]
+        points = entry.get("data_points") or {}
+        counts = f"{points['written']}/{points['expected']} points" if points else "no data points"
+        if status == "complete":
+            missing = points.get("expected", 0) - points.get("written", 0)
+            if missing:
+                self._warn(f"{run.key} completed with {missing} of {points['expected']} data points "
+                           "missing (benchmark executions that failed or hung; see its logs/)")
+            else:
+                self._print(f"==> {run.key}: complete ({counts})")
+            return
+        reason = (entry.get("error") or "").strip().splitlines()
+        detail = f": {reason[0][:200]}" if reason else ""
+        self._warn(f"{run.key} {status} ({counts}){detail}" + self._continuing(remaining))
+
+    def _run_one(self, run: PlannedRun, env: Environment | None, latency, index: int, total: int) -> bool:
+        """Run one experiment and record how it ended.
+
+        Returns True when Ctrl-C interrupted it. Anything that goes wrong
+        with this run, short of stopping the suite, is recorded on its entry
+        instead of raised.
+        """
+        folder = run_folder(self.suite_dir, run)
+        entry = self._entry(run)
+        code, interrupted, error = None, False, None
+        try:
+            if read_record(folder) is not None:  # an earlier attempt that did not complete
+                attempt = self._move_aside(folder)
+                entry.setdefault("attempts", []).append(os.path.relpath(attempt, self.suite_dir))
+                self._prepare_run_folder(run)
+                self._print(f"==> Earlier attempt of {run.key} moved to {attempt}")
+            entry["status"] = "running"
+            self._write()
+
+            self._print(f"\n==> [{index}/{total}] {run.key}")
+            command = [
+                sys.executable, "-m", "scripts", "run", os.path.join(folder, CONFIG_FILE),
+                "--dir", folder, "--build-dir", run.build_dir, "--no-build",
+            ]
+            context = {"name": self.suite.name, "dir": self.suite_dir, "run": run.key,
+                       "cgroup": self.suite.cgroup,
+                       "environment": self._environment_context(env, latency)}
+            child_env = {**os.environ, SUITE_CONTEXT_ENV: json.dumps(context)}
+            code = self._child(command, child_env)
+        except (SuiteTerminated, SuiteStopped):
+            self._record_result(entry, folder, None, interrupted=True)
+            raise
+        except KeyboardInterrupt:  # Ctrl-C: this run stops, the suite goes on
+            interrupted = True
+        except Exception as exc:
+            error = f"the suite could not run it: {type(exc).__name__}: {exc}"
+        self._record_result(entry, folder, code, interrupted=interrupted, error=error)
+        return interrupted
+
+    def _record_result(self, entry: dict, folder: str, code: int | None, *,
+                       interrupted: bool = False, error: str | None = None):
         result = read_record(folder)
         entry["exit_code"] = code
-        if result is None:
+        entry.pop("data_points", None)
+        if error is not None:
             entry["status"] = "failed"
-            entry["error"] = "the run exited before recording itself; see the output above"
+            entry["error"] = error
+        elif result is None:
+            entry["status"] = "interrupted" if interrupted else "failed"
+            entry["error"] = ("interrupted before the run recorded itself" if interrupted
+                              else "the run exited before recording itself; see the output above")
         else:
             status = result.get("status")
-            if status == "running":  # killed before it could record how it ended
-                status = "failed" if code is not None else "interrupted"
-            entry["status"] = status
             entry["data_points"] = result.get("data_points")
             if result.get("error"):
                 entry["error"] = result["error"]
             else:
                 entry.pop("error", None)
+            if status == "running":  # killed before it could record how it ended
+                if interrupted or code is None:
+                    status = "interrupted"
+                else:
+                    status = "failed"
+                    entry["error"] = (f"the run process ended ({_format_return_code(code)}) "
+                                      "without recording how")
+                    if code == -signal.SIGKILL:
+                        entry["error"] += "; a SIGKILL often means the OOM killer"
+            elif status == "interrupted" and not interrupted:
+                entry["error"] = entry.get("error") or "the run process was interrupted by a signal"
+            entry["status"] = status
         self._write()
 
     def _environment_context(self, env: Environment | None, latency) -> dict | None:

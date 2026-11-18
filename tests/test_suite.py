@@ -13,6 +13,8 @@ from scripts.rundir import SUITE_CONTEXT_ENV
 from scripts.suite import (
     SuiteOptions,
     SuiteRunner,
+    SuiteStopped,
+    SuiteTerminated,
     describe_suite,
     executions,
     load_suite,
@@ -231,11 +233,17 @@ class PlanTests(unittest.TestCase):
 
 
 class FakeChild:
-    """Stands in for `python -m scripts run`: writes run.json with a chosen status."""
+    """Stands in for `python -m scripts run`: writes run.json with a chosen status.
 
-    def __init__(self, outcomes=None, interrupt_on=None):
+    An outcome of None crashes before recording anything, "killed" dies by
+    SIGKILL mid-run, and an exception instance is raised as if starting the
+    process failed. interrupt_on gets Ctrl-C (or the `interrupt` exception).
+    """
+
+    def __init__(self, outcomes=None, interrupt_on=None, interrupt=KeyboardInterrupt):
         self.outcomes = outcomes or {}
         self.interrupt_on = interrupt_on
+        self.interrupt = interrupt
         self.calls = []
 
     def __call__(self, command, env):
@@ -244,10 +252,15 @@ class FakeChild:
         self.calls.append((context["run"], command, context))
         if context["run"] == self.interrupt_on:
             self._write(folder, "interrupted")
-            raise KeyboardInterrupt
+            raise self.interrupt()
         status = self.outcomes.get(context["run"], "complete")
+        if isinstance(status, BaseException):
+            raise status
         if status is None:  # crashed before recording anything
             return 1
+        if status == "killed":
+            self._write(folder, "running")
+            return -9
         self._write(folder, status)
         return 0 if status == "complete" else 1
 
@@ -260,20 +273,25 @@ class FakeChild:
 
 
 class FakeRegister:
-    """A CXL latency register behind a fake setpci."""
+    """A CXL latency register behind a fake setpci; writing a value in fail_on fails."""
 
-    def __init__(self, value="00000040"):
+    def __init__(self, value="00000040", fail_on=()):
         self.value = value
+        self.fail_on = set(fail_on)
         self.writes = []
+        self.reads = 0
 
     def __call__(self, command):
         assert command[:3] == ["setpci", "-s", PCI], command
         register, _, value = command[3].partition("=")
         assert register == "0xe08.l"
         if value:
+            if value in self.fail_on:
+                raise RuntimeError("`sudo setpci` failed: sudo: timed out reading password")
             self.writes.append(value)
             self.value = value.zfill(8)
             return ""
+        self.reads += 1
         return self.value + "\n"
 
 
@@ -285,14 +303,22 @@ class RunnerTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.suite_dir = os.path.join(self.tmp.name, "suite")
 
-    def runner(self, s, child, options=None, setpci=None, create=True):
-        runner = SuiteRunner(s, self.suite_dir, options, child=child, setpci=setpci, out=io.StringIO())
+    def runner(self, s, child, options=None, setpci=None, create=True, sleep=None):
+        self.pauses = []
+        runner = SuiteRunner(s, self.suite_dir, options, child=child, setpci=setpci, out=io.StringIO(),
+                             sleep=sleep or self.pauses.append)
         if create:
             runner.create(source="demo.toml")
         return runner
 
     def record(self):
         return json.loads(Path(self.suite_dir, "suite.json").read_text(encoding="utf-8"))
+
+    def statuses(self):
+        return {run["key"]: run["status"] for run in self.record()["runs"]}
+
+    def log(self):
+        return Path(self.suite_dir, "suite.log").read_text(encoding="utf-8")
 
     def test_runs_every_experiment_in_its_own_prepared_folder(self):
         child = FakeChild()
@@ -356,7 +382,8 @@ class RunnerTests(unittest.TestCase):
     def test_latency_is_set_per_environment_and_always_restored(self):
         register = FakeRegister("00000040")
         child = FakeChild()
-        with patch("scripts.suite.build"):
+        # The register is read before building, while whoever started the suite is still there.
+        with patch("scripts.suite.build", lambda *a, **k: self.assertEqual(register.reads, 1)):
             self.assertEqual(self.runner(suite(LATENCY_SUITE), child, setpci=register).run(), 0)
         self.assertEqual(register.writes, ["ffff", "0020", "00000040"])
         self.assertEqual(register.value, "00000040")
@@ -366,16 +393,81 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(contexts["slow/max"]["value"], "ffff")
         self.assertEqual(self.record()["sessions"][0]["latency_original"], "00000040")
 
-    def test_interrupt_restores_latency_and_marks_the_suite(self):
+    def test_ctrl_c_interrupts_only_the_current_run(self):
         register = FakeRegister("00000040")
         child = FakeChild(interrupt_on="slow/max")
-        with patch("scripts.suite.build"), self.assertRaises(KeyboardInterrupt):
-            self.runner(suite(LATENCY_SUITE), child, setpci=register).run()
+        with patch("scripts.suite.build"):
+            self.assertEqual(self.runner(suite(LATENCY_SUITE), child, setpci=register).run(), 1)
+        self.assertEqual(self.statuses(), {"host/max": "complete", "slow/max": "interrupted",
+                                           "fast/max": "complete"})
+        self.assertEqual(self.pauses, [5])  # a window to press Ctrl-C again and stop
         self.assertEqual(register.value, "00000040")
-        record = self.record()
-        self.assertEqual(record["status"], "interrupted")
-        self.assertEqual({run["key"]: run["status"] for run in record["runs"]},
-                         {"host/max": "complete", "slow/max": "interrupted", "fast/max": "pending"})
+        self.assertEqual(self.record()["status"], "incomplete")
+        self.assertIn("==> WARNING: slow/max interrupted (1/2 points); continuing with the remaining 1 run(s)",
+                      self.log())
+        self.assertRegex(self.log(), r"\d{4}-\d\d-\d\dT[\d:]+Z ==> fast/max: complete \(2/2 points\)")
+
+    def test_ctrl_c_twice_or_sigterm_stops_the_suite(self):
+        def second_ctrl_c(seconds):
+            raise KeyboardInterrupt
+
+        register = FakeRegister("00000040")
+        with patch("scripts.suite.build"), self.assertRaises(SuiteStopped):
+            self.runner(suite(LATENCY_SUITE), FakeChild(interrupt_on="slow/max"), setpci=register,
+                        sleep=second_ctrl_c).run()
+        self.assertEqual(register.value, "00000040")
+        self.assertEqual(self.record()["status"], "interrupted")
+        self.assertEqual(self.statuses(), {"host/max": "complete", "slow/max": "interrupted",
+                                           "fast/max": "pending"})
+
+        self.tmp.cleanup()
+        register = FakeRegister("00000040")
+        with patch("scripts.suite.build"), self.assertRaises(SuiteTerminated):
+            self.runner(suite(LATENCY_SUITE), FakeChild(interrupt_on="slow/max", interrupt=SuiteTerminated),
+                        setpci=register).run()
+        self.assertEqual(self.pauses, [])
+        self.assertEqual(register.value, "00000040")
+        self.assertEqual(self.statuses(), {"host/max": "complete", "slow/max": "interrupted",
+                                           "fast/max": "pending"})
+
+    def test_an_environment_whose_latency_cannot_be_set_is_skipped(self):
+        register = FakeRegister("00000040", fail_on={"ffff"})
+        child = FakeChild()
+        with patch("scripts.suite.build"):
+            self.assertEqual(self.runner(suite(LATENCY_SUITE), child, setpci=register).run(), 1)
+        self.assertEqual([call[0] for call in child.calls], ["host/max", "fast/max"])
+        runs = {run["key"]: run for run in self.record()["runs"]}
+        self.assertEqual(runs["slow/max"]["status"], "skipped")
+        self.assertIn("could not set the CXL latency to ffff: `sudo setpci` failed", runs["slow/max"]["error"])
+        self.assertEqual(register.value, "00000040")
+        self.assertIn("==> WARNING: skipped the 1 run(s) of environment slow: could not set", self.log())
+
+        # Resuming once sudo works again runs only the skipped environment.
+        register.fail_on.clear()
+        retry = FakeChild()
+        with patch("scripts.suite.build"):
+            resumed = SuiteRunner(suite_from_record(self.suite_dir), self.suite_dir, child=retry,
+                                  setpci=register, out=io.StringIO())
+            self.assertEqual(resumed.run(), 0)
+        self.assertEqual([call[0] for call in retry.calls], ["slow/max"])
+        self.assertEqual(register.value, "00000040")
+
+    def test_a_run_that_cannot_start_or_is_killed_does_not_stop_the_suite(self):
+        child = FakeChild({"near/max": OSError(12, "Cannot allocate memory"), "near/min": "killed"})
+        with patch("scripts.suite.build"):
+            self.assertEqual(self.runner(suite(), child).run(), 1)
+        self.assertEqual(len(child.calls), 4)
+        runs = {run["key"]: run for run in self.record()["runs"]}
+        self.assertEqual(runs["near/max"]["status"], "failed")
+        self.assertIn("could not run it: OSError", runs["near/max"]["error"])
+        self.assertEqual(runs["near/min"]["status"], "failed")
+        self.assertIn("(terminated by SIGKILL (9)) without recording how; a SIGKILL often means the OOM killer",
+                      runs["near/min"]["error"])
+        self.assertEqual(runs["far/min"]["status"], "complete")
+        log = self.log()
+        self.assertIn("==> WARNING: near/max failed (no data points): the suite could not run it", log)
+        self.assertIn("==> WARNING: near/min failed (1/2 points): the run process ended", log)
+        self.assertEqual(self.pauses, [])
 
     def test_cgroup_is_joined_before_building_and_recorded(self):
         events = []

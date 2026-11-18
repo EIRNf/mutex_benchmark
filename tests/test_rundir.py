@@ -159,6 +159,54 @@ class RunRecordTests(unittest.TestCase):
                 run_configured(run)
             self.assertEqual(self.record(paths)["status"], "interrupted")
 
+    def benchmark(self, crash):
+        """A fake subprocess.run: CSV output, or a SIGSEGV for the points crash() picks."""
+        real_run = subprocess.run
+
+        def fake_run(command, **kwargs):
+            if not command[0].endswith("_bench"):  # git and other bookkeeping
+                return real_run(command, **kwargs)
+            lock, threads = command[1], int(command[2])
+            if crash(lock, threads):
+                return subprocess.CompletedProcess(command, -11, b"", b"starting\nSegmentation fault\n")
+            rows = "".join(f"{t},1.0,1000\n" for t in range(threads))
+            return subprocess.CompletedProcess(command, 0, rows.encode(), b"")
+        return patch("scripts.runner.subprocess.run", fake_run)
+
+    def quiet_run(self, tmp):
+        cfg = config_from_toml(SWEEP, ["plot.layout=none"])
+        paths = RunPaths.for_new_run(cfg.name, os.path.join(tmp, "run"))
+        return resolve_run(cfg, paths, skip_build=False), paths
+
+    def test_a_failed_benchmark_execution_skips_only_its_point(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run, paths = self.quiet_run(tmp)
+            with self.benchmark(lambda lock, threads: (lock, threads) == ("spin", 1)), \
+                    self.assertLogs("scripts.logger", level="WARNING") as logs:
+                run_configured(run)
+
+            record = self.record(paths)
+            self.assertEqual(record["status"], "complete")
+            self.assertEqual((record["data_points"]["written"], record["data_points"]["expected"]), (3, 4))
+            self.assertEqual(record["data_points"]["missing"],
+                             ["spin-max-throughput-rep0-threads=1.csv"])
+            warning = next(line for line in logs.output if "FAILED" in line)
+            self.assertIn("FAILED: spin terminated by SIGSEGV (11) (threads=1, rep=0) — skipping this point",
+                          warning)
+            self.assertTrue(any("Segmentation fault" in line for line in logs.output))
+            saved = Path(paths.logs, "spin-max-throughput-rep0-threads=1.failed.txt")
+            self.assertIn("Segmentation fault", saved.read_text(encoding="utf-8"))
+
+    def test_a_run_whose_every_execution_fails_is_failed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run, paths = self.quiet_run(tmp)
+            with self.benchmark(lambda lock, threads: True), self.assertLogs("scripts.logger", "WARNING"), \
+                    self.assertRaisesRegex(RuntimeError, "none of the 4 benchmark executions wrote data"):
+                run_configured(run)
+            record = self.record(paths)
+            self.assertEqual(record["status"], "failed")
+            self.assertIn("first: spin (threads=1, rep=0) terminated by SIGSEGV", record["error"])
+
 
 class BuildVerificationTests(unittest.TestCase):
     def build_dir(self, tmp, cpp_args):

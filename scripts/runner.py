@@ -18,6 +18,20 @@ def _format_command_output(output: bytes, *, limit: int = 80) -> str:
     return "\n".join(lines)
 
 
+class BenchmarkFailed(RuntimeError):
+    """One benchmark execution exited non-zero or was killed by a signal.
+
+    The message holds the command and both output streams; ``status`` is the
+    short form ("exit code 1", "terminated by SIGSEGV (11)").
+    """
+
+    def __init__(self, message: str, status: str, stderr: bytes = b""):
+        super().__init__(message)
+        self.status = status
+        lines = stderr.decode("utf-8", errors="replace").strip().splitlines()
+        self.stderr_tail = lines[-3:]
+
+
 def _format_return_code(returncode: int) -> str:
     if returncode >= 0:
         return f"exit code {returncode}"
@@ -277,7 +291,7 @@ def _parse_tigon_output_to_csv(stdout_bytes, stderr_bytes, threads: int, seconds
 def _run_command_to_csv(run, command, timeout_s: float, threads: int = 1, seconds: float = 1.0):
     """Run *command* and return its stdout bytes.
 
-    Raises RuntimeError on non-zero exit.
+    Raises BenchmarkFailed on non-zero exit.
     Raises subprocess.TimeoutExpired if the process exceeds *timeout_s*.
     subprocess.run() kills the child process before raising, so no cleanup needed.
     """
@@ -306,10 +320,12 @@ def _run_command_to_csv(run, command, timeout_s: float, threads: int = 1, second
         stdout = _format_command_output(result.stdout)
         stderr = _format_command_output(result.stderr)
         status = _format_return_code(result.returncode)
-        raise RuntimeError(
+        raise BenchmarkFailed(
             f"Benchmark command failed ({status}): {command}\n"
             f"--- stdout ---\n{stdout}\n"
-            f"--- stderr ---\n{stderr}"
+            f"--- stderr ---\n{stderr}",
+            status,
+            result.stderr,
         )
 
     if run.bench.startswith("tigon"):
@@ -335,8 +351,72 @@ def _bench_timeout(run) -> float:
     return max(30.0, expected_seconds * 10 + 15)
 
 
+class _PointTally:
+    """What a run's benchmark executions produced, for its final check."""
+
+    def __init__(self):
+        self.written = 0
+        self.problems: list[str] = []
+
+    def check(self):
+        """A run where no execution wrote data failed as a whole."""
+        if self.problems and not self.written:
+            raise RuntimeError(
+                f"none of the {len(self.problems)} benchmark executions wrote data "
+                f"(each failed or hung); first: {self.problems[0]}"
+            )
+
+
+def _save_failure_output(run, data_file_name: str, error: BenchmarkFailed) -> str | None:
+    """Keep a failed execution's full output beside the run's logs."""
+    name = os.path.splitext(os.path.basename(data_file_name))[0] + ".failed.txt"
+    path = os.path.join(run.logs_folder, name)
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(str(error) + "\n")
+    except OSError:
+        return None
+    return path
+
+
+def _run_point(run, mutex_name, command, data_file_name, timeout, tally, *, threads, where):
+    """Run one benchmark execution into its CSV.
+
+    A hang or a failed execution is logged and skipped, so one bad point
+    does not cost the rest of the run.
+    """
+    try:
+        csv_data = _run_command_to_csv(
+            run,
+            command, timeout,
+            threads=threads,
+            seconds=run.bench_n_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            f"HANG: {mutex_name} timed out after {timeout:.0f}s "
+            f"({where}) — skipping this point"
+        )
+        tally.problems.append(f"{mutex_name} ({where}) timed out after {timeout:.0f}s")
+        return
+    except BenchmarkFailed as error:
+        saved = _save_failure_output(run, data_file_name, error)
+        logger.warning(
+            f"FAILED: {mutex_name} {error.status} ({where}) — skipping this point"
+            + (f"; full output in {saved}" if saved else "")
+        )
+        for line in error.stderr_tail:
+            logger.warning(f"    {line}")
+        tally.problems.append(f"{mutex_name} ({where}) {error.status}")
+        return
+    with open(data_file_name, "wb") as data_file:
+        data_file.write(csv_data)
+    tally.written += 1
+
+
 def run_experiment_lock_level_single_threaded(run):
     timeout = _bench_timeout(run)
+    tally = _PointTally()
     for i in range(run.n_program_iterations):
         for mutex_name in run.mutex_names:
             logger.info(f"{mutex_name=} | {i=}")
@@ -344,25 +424,14 @@ def run_experiment_lock_level_single_threaded(run):
             if os.path.exists(data_file_name):
                 os.remove(data_file_name)
             command = get_command(run, mutex_name, csv=True, thread_level=False)
-            try:
-                csv_data = _run_command_to_csv(
-                    run,
-                    command, timeout,
-                    threads=run.bench_n_threads,
-                    seconds=run.bench_n_seconds,
-                )
-            except subprocess.TimeoutExpired:
-                logger.warning(
-                    f"HANG: {mutex_name} timed out after {timeout:.0f}s "
-                    f"(rep={i}) — skipping this point"
-                )
-                continue
-            with open(data_file_name, "wb") as data_file:
-                data_file.write(csv_data)
+            _run_point(run, mutex_name, command, data_file_name, timeout, tally,
+                       threads=run.bench_n_threads, where=f"rep={i}")
+    tally.check()
 
 
 def run_experiment_iter_single_threaded(run):
     timeout = _bench_timeout(run)
+    tally = _PointTally()
     for i in range(run.n_program_iterations):
         for iter_variable_value in range(*run.iter_range):
             # iter_kwargs names the sweep variable only (used for file names).
@@ -376,19 +445,7 @@ def run_experiment_iter_single_threaded(run):
                 if os.path.exists(data_file_name):
                     os.remove(data_file_name)
                 command = get_command(run, mutex_name, csv=True, thread_level=run.thread_level, **cmd_kwargs)
-                try:
-                    csv_data = _run_command_to_csv(
-                    run,
-                        command, timeout,
-                        threads=threads,
-                        seconds=run.bench_n_seconds,
-                    )
-                except subprocess.TimeoutExpired:
-                    logger.warning(
-                        f"HANG: {mutex_name} timed out after {timeout:.0f}s "
-                        f"({run.iter_variable_name}={iter_variable_value}, rep={i}) "
-                        f"— skipping this point"
-                    )
-                    continue
-                with open(data_file_name, "wb") as data_file:
-                    data_file.write(csv_data)
+                _run_point(run, mutex_name, command, data_file_name, timeout, tally,
+                           threads=threads,
+                           where=f"{run.iter_variable_name}={iter_variable_value}, rep={i}")
+    tally.check()
