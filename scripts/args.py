@@ -19,12 +19,12 @@ from .config import (
     Sweep,
     Tigon,
     Workload,
-    apply_to_constants,
     check_host,
     validate,
 )
 from .constants import Constants
 from .logger import logger
+from .settings import resolve_run
 
 
 _ALLOC_ALIASES = {"malloc": "none", "cxl-hardware": "locks"}
@@ -351,11 +351,11 @@ def build_parser():
 
 
 def init_args(argv=None):
-    """Parse legacy flags, validate them, and load them into Constants.
+    """Parse legacy flags, validate them, and resolve them into RunSettings.
 
-    Returns the ExperimentConfig. Folders keep the flag CLI's layout: CSVs in
-    --data-folder (a timestamped subfolder of the default), figures in
-    ../figs, and config.toml + run.json beside the CSVs.
+    Returns the RunSettings (its config is run.cfg). Folders keep the flag
+    CLI's layout: CSVs in --data-folder (a timestamped subfolder of the
+    default), figures in ../figs, and config.toml + run.json beside the CSVs.
     """
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -366,6 +366,6 @@ def init_args(argv=None):
         paths = RunPaths.legacy(args.data_folder, args.log_folder, args.reuse_data)
     except ConfigError as exc:
         parser.error(render_for_cli(str(exc)))
-    apply_to_constants(cfg, paths)
-    logger.debug(Constants.data_folder)
-    return cfg
+    run = resolve_run(cfg, paths)
+    logger.debug(run.data_folder)
+    return run

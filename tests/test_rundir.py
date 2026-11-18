@@ -11,14 +11,13 @@ from scripts.builder import verify_build_matches
 from scripts.config import (
     ConfigError,
     RunPaths,
-    apply_to_constants,
     config_from_toml,
     load_config,
 )
-from scripts.constants import Constants
 from scripts.main import run_configured
 from scripts.rundir import expected_data_files
 from scripts.runner import get_command
+from scripts.settings import resolve_run
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -107,15 +106,14 @@ class RunPathsTests(unittest.TestCase):
                 RunPaths.for_existing_run(tmp)
 
 
-@patch("scripts.main.init_logger", lambda: None)
+@patch("scripts.main.init_logger", lambda run: None)
 @patch("scripts.main.build", lambda *args, **kwargs: None)
 @patch("scripts.main.verify_build_matches", lambda *args, **kwargs: ["-std=c++20"])
 class RunRecordTests(unittest.TestCase):
     def start_run(self, tmp):
         cfg = config_from_toml(SWEEP)
         paths = RunPaths.for_new_run(cfg.name, os.path.join(tmp, "run"))
-        apply_to_constants(cfg, paths)
-        return cfg, paths
+        return resolve_run(cfg, paths, skip_build=False), paths
 
     def record(self, paths):
         with open(os.path.join(paths.run_dir, "run.json"), encoding="utf-8") as handle:
@@ -123,12 +121,12 @@ class RunRecordTests(unittest.TestCase):
 
     def test_completed_run_is_self_describing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            cfg, paths = self.start_run(tmp)
-            expected = expected_data_files()
-            with patch("scripts.main._dispatch", lambda: write_csv(expected[0])):
-                run_configured(cfg)
+            run, paths = self.start_run(tmp)
+            expected = expected_data_files(run)
+            with patch("scripts.main._dispatch", lambda run: write_csv(expected[0])):
+                run_configured(run)
 
-            self.assertEqual(load_config(os.path.join(paths.run_dir, "config.toml")), cfg)
+            self.assertEqual(load_config(os.path.join(paths.run_dir, "config.toml")), run.cfg)
             record = self.record(paths)
             self.assertEqual(record["status"], "complete")
             self.assertEqual(record["locks"], ["spin", "ticket"])
@@ -140,25 +138,25 @@ class RunRecordTests(unittest.TestCase):
             self.assertIsNotNone(record["finished_utc"])
 
     def test_failed_run_records_the_error(self):
-        def boom():
+        def boom(run):
             raise RuntimeError("benchmark exploded")
 
         with tempfile.TemporaryDirectory() as tmp:
-            cfg, paths = self.start_run(tmp)
+            run, paths = self.start_run(tmp)
             with patch("scripts.main._dispatch", boom), self.assertRaises(RuntimeError):
-                run_configured(cfg)
+                run_configured(run)
             record = self.record(paths)
             self.assertEqual(record["status"], "failed")
             self.assertIn("benchmark exploded", record["error"])
 
     def test_interrupted_run_is_marked(self):
-        def interrupt():
+        def interrupt(run):
             raise KeyboardInterrupt
 
         with tempfile.TemporaryDirectory() as tmp:
-            cfg, paths = self.start_run(tmp)
+            run, paths = self.start_run(tmp)
             with patch("scripts.main._dispatch", interrupt), self.assertRaises(KeyboardInterrupt):
-                run_configured(cfg)
+                run_configured(run)
             self.assertEqual(self.record(paths)["status"], "interrupted")
 
 
@@ -192,22 +190,20 @@ class BuildVerificationTests(unittest.TestCase):
                 verify_build_matches(tmp, hardware_cxl=False, mutex_names=[])
 
     def test_each_placement_gets_its_own_build_folder(self):
-        cfg = config_from_toml(SWEEP)
-        apply_to_constants(cfg, skip_build=False)
-        self.assertEqual(Constants.build_dir, "build")
-        self.assertTrue(get_command("spin", threads=2)[0].startswith("build/apps/"))
+        run = resolve_run(config_from_toml(SWEEP), skip_build=False)
+        self.assertEqual(run.build_dir, "build")
+        self.assertTrue(get_command(run, "spin", threads=2)[0].startswith("build/apps/"))
 
         cfg = config_from_toml(SWEEP, ["memory.placement=locks", "memory.node=1"])
-        apply_to_constants(cfg, skip_build=False)
-        self.assertEqual(Constants.build_dir, "build-hardware_cxl")
-        self.assertTrue(get_command("spin", threads=2)[0].startswith("build-hardware_cxl/apps/"))
+        run = resolve_run(cfg, skip_build=False)
+        self.assertEqual(run.build_dir, "build-hardware_cxl")
+        self.assertTrue(get_command(run, "spin", threads=2)[0].startswith("build-hardware_cxl/apps/"))
 
         tigon = config_from_toml(SWEEP, ["bench=tigon_ycsb", "locks.include=mcs"])
-        apply_to_constants(tigon, build_dir="/tmp/other-build", skip_build=False)
-        command = get_command("mcs", threads=2)
+        run = resolve_run(tigon, build_dir="/tmp/other-build", skip_build=False)
+        command = get_command(run, "mcs", threads=2)
         self.assertEqual(command[1:3], ["-b", "/tmp/other-build"])
         self.assertEqual(command[command.index("mcs") + 1], "/tmp/other-build/apps/tigon_db_bench/bench_ycsb")
-        apply_to_constants(config_from_toml(SWEEP), skip_build=False)  # reset for other tests
 
 
 class PlotCommandTests(unittest.TestCase):
@@ -225,8 +221,7 @@ class PlotCommandTests(unittest.TestCase):
             paths = RunPaths.for_new_run(cfg.name, run_dir)
             os.makedirs(paths.data)
             Path(run_dir, "config.toml").write_text(SWEEP, encoding="utf-8")
-            apply_to_constants(cfg, paths)
-            for path in expected_data_files():
+            for path in expected_data_files(resolve_run(cfg, paths)):
                 write_csv(path)
 
             result = self.run_cli("plot", run_dir, "-o", "plot.layout=combined")

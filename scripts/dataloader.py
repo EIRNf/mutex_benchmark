@@ -1,4 +1,3 @@
-from .constants import *
 from .runner import get_data_file_name
 from .logger import logger
 
@@ -6,14 +5,14 @@ import pandas as pd # pyright: ignore[reportMissingModuleSource]
 
 # Load data from CSV into dictionary of Pandas dataframes
 
-def debug_print_averages_lock_level():
+def debug_print_averages_lock_level(run):
     CHUNKSIZE = 1_000_000
     logger.debug("print_averages_lock_level running...")
-    for mutex_name in Constants.mutex_names:
+    for mutex_name in run.mutex_names:
         total_average = 0
         total_count = 0
-        for i in range(Constants.n_program_iterations):
-            data_file_name = get_data_file_name(mutex_name, i)
+        for i in range(run.n_program_iterations):
+            data_file_name = get_data_file_name(run, mutex_name, i)
             if not _file_ready(data_file_name, mutex_name, context=f"rep={i}"):
                 continue
             for chunk_i, df in enumerate(pd.read_csv(data_file_name, names=["Thread ID", "Iteration #", "Time Spent"], chunksize=CHUNKSIZE)):
@@ -39,17 +38,17 @@ def _file_ready(path: str, mutex_name: str, *, context: str = "") -> bool:
     return True
 
 
-def load_data_lock_level():
+def load_data_lock_level(run):
     """
-    Loads saved data from csv files in DATA_FOLDER.
+    Loads saved data from the run's CSV files (run.data_folder).
     Generates tuples of the form (mutex_name, dataframe).
     Silently skips any mutex whose CSV files are entirely missing (hung runs).
     """
     logger.debug("load_data_lock_level running...")
-    for mutex_name in Constants.mutex_names:
+    for mutex_name in run.mutex_names:
         dataframes = []
-        for i in range(Constants.n_program_iterations):
-            data_file_name = get_data_file_name(mutex_name, i)
+        for i in range(run.n_program_iterations):
+            data_file_name = get_data_file_name(run, mutex_name, i)
             if not _file_ready(data_file_name, mutex_name, context=f"rep={i}"):
                 continue
             dataframe = pd.read_csv(data_file_name, names=["Thread ID", "Iteration #", "Time Spent"])
@@ -67,26 +66,26 @@ def get_column_names(rusage):
     else:
         return ["Thread ID", "Seconds", "# Iterations"]
 
-def load_data_iter():
-    for mutex_name in Constants.mutex_names:
+def load_data_iter(run):
+    for mutex_name in run.mutex_names:
         all_dataframes = []
-        for iter_variable_value in range(*Constants.iter_range):
+        for iter_variable_value in range(*run.iter_range):
             # Use only the sweep variable in the file-name lookup (rusage is
             # encoded in the capture segment, not as a separate kwarg).
-            iter_kwargs = {Constants.iter_variable_name: iter_variable_value}
+            iter_kwargs = {run.iter_variable_name: iter_variable_value}
             dataframes = []
-            for i in range(Constants.n_program_iterations):
-                data_file_name = get_data_file_name(mutex_name, i, **iter_kwargs)
-                if not _file_ready(data_file_name, mutex_name, context=f"{Constants.iter_variable_name}={iter_variable_value}, rep={i}"):
+            for i in range(run.n_program_iterations):
+                data_file_name = get_data_file_name(run, mutex_name, i, **iter_kwargs)
+                if not _file_ready(data_file_name, mutex_name, context=f"{run.iter_variable_name}={iter_variable_value}, rep={i}"):
                     continue
-                dataframe = pd.read_csv(data_file_name, names=get_column_names(Constants.rusage))
+                dataframe = pd.read_csv(data_file_name, names=get_column_names(run.rusage))
                 dataframe["run"] = i
                 dataframes.append(dataframe)
             if not dataframes:
                 # All reps at this point were skipped — no rows for this value.
                 continue
             df_point = pd.concat(dataframes)
-            df_point[Constants.iter_variable_name] = iter_variable_value
+            df_point[run.iter_variable_name] = iter_variable_value
             all_dataframes.append(df_point)
         if not all_dataframes:
             logger.warning(f"No data at all for {mutex_name} — skipping from plot")

@@ -12,9 +12,8 @@ validation:
 Where results go is a RunPaths, chosen by the entry point: a fresh run folder
 (``RunPaths.for_new_run``), an existing one to re-plot
 (``RunPaths.for_existing_run``), or the flag CLI's flat folders
-(``RunPaths.legacy``). apply_to_constants() copies a validated config and its
-paths onto the global ``Constants`` object that the builder, runner,
-dataloader and plotter read.
+(``RunPaths.legacy``). scripts/settings.py resolves a config and its paths
+into the RunSettings that the builder, runner, dataloader and plotter take.
 
 Error messages name settings by their config key in backticks (for example
 `tigon.query`); the flag CLI rewrites those keys to flag names before printing.
@@ -23,7 +22,6 @@ Error messages name settings by their config key in backticks (for example
 from __future__ import annotations
 
 import copy
-import logging
 import math
 import os
 import re
@@ -37,9 +35,7 @@ from datetime import datetime
 from difflib import get_close_matches
 from typing import Any
 
-from .builder import default_build_dir
 from .constants import Constants
-from .logger import logger
 
 
 BENCHES = ("max", "min", "grouped", "tigon", "tigon_ycsb", "tigon_tpcc")
@@ -676,127 +672,9 @@ def to_toml(cfg: ExperimentConfig) -> str:
 
 
 # --------------------------------------------------------------------------
-# Bridge to the global Constants object used by the rest of the pipeline.
+# Derived values shared with scripts/settings.py and scripts/suite.py.
 # --------------------------------------------------------------------------
 
 def tigon_warmup_seconds(cfg_seconds: float, warmup: int | None) -> int:
     run_seconds = max(1, int(cfg_seconds))
     return warmup if warmup is not None else min(1, run_seconds - 1)
-
-
-def apply_to_constants(cfg: ExperimentConfig, paths: RunPaths | None = None, *,
-                       build_dir: str | None = None, skip_build: bool | None = None):
-    """Copy a validated config, its output paths and build choice onto Constants.
-
-    build_dir defaults to the placement's own build folder (build/ or
-    build-hardware_cxl/). skip_build defaults to MUTEX_BENCH_SKIP_BUILD=1.
-    """
-    if paths is None:
-        paths = RunPaths.legacy(Constants.Defaults.DATA_FOLDER, Constants.Defaults.LOGS_FOLDER, False)
-    C = Constants
-    C.experiment_name = cfg.name
-    C.mutex_names = resolve_lock_names(cfg.locks)
-    C.bench = cfg.bench
-    C.executable = C.Defaults.BENCH_EXECUTABLES[cfg.bench]
-    C.bench_n_threads = cfg.threads
-    C.bench_n_seconds = cfg.seconds
-    C.n_program_iterations = cfg.repetitions
-
-    C.capture = cfg.capture
-    C.rusage = cfg.capture == "rusage"
-    C.thread_level = cfg.capture in ("throughput", "rusage")
-
-    if cfg.sweep is None:
-        C.iter = False
-    else:
-        C.iter = True
-        C.iter_variable_name = cfg.sweep.var
-        C.iter_range = [cfg.sweep.start, cfg.sweep.stop + 1, cfg.sweep.step]  # inclusive
-
-    C.data_folder = paths.data
-    C.figs_folder = paths.plots
-    C.logs_folder = paths.logs
-    C.run_dir = paths.run_dir
-    C.skip_experiment = paths.reuse
-
-    w = cfg.workload
-    C.groups = w.groups
-    C.critical_delay = w.critical_delay if w.critical_delay is not None else -1
-    C.noncritical_delay = w.noncritical_delay if w.noncritical_delay is not None else -1
-    C.stagger_ms = w.stagger_ms if w.stagger_ms is not None else 0
-    C.low_contention = C.stagger_ms > 0
-
-    t = cfg.tigon
-    is_tpcc = cfg.bench == "tigon_tpcc"
-    C.tigon_query = t.query or ("mixed" if is_tpcc else "rmw")
-    C.tigon_protocol = t.protocol or "TwoPL"
-    C.tigon_partitions = t.partitions
-    C.tigon_partition_ratio = t.partition_ratio
-    C.tigon_warmup_seconds = t.warmup_seconds
-    C.tigon_read_write_ratio = t.read_write_ratio if t.read_write_ratio is not None else 80
-    C.tigon_read_only_ratio = t.read_only_ratio if t.read_only_ratio is not None else 0
-    C.tigon_cross_ratio = t.cross_ratio if t.cross_ratio is not None else 0
-    C.tigon_cross_partitions = t.cross_partitions if t.cross_partitions is not None else 2
-    C.tigon_keys = t.keys if t.keys is not None else 200000
-    C.tigon_zipf = t.zipf if t.zipf is not None else 0.0
-    C.tigon_neworder_dist = t.neworder_dist if t.neworder_dist is not None else 10
-    C.tigon_payment_dist = t.payment_dist if t.payment_dist is not None else 15
-    C.bench_variant = _tigon_variant(cfg) if cfg.is_tigon else ""
-
-    p = cfg.plot
-    C.plot = p.layout
-    C.skip_plotting = p.layout == "none"
-    C.faceted = {"faceted": True, "combined": False}.get(p.layout)
-    C.show = p.show
-    C.scatter = p.scatter
-    C.max_n_points = p.max_points
-    C.variability = p.variability
-    C.speedup = p.speedup is not None
-    C.speedup_ref = p.speedup
-    C.heatmap_ref = p.heatmap_ref
-    C.no_heatmap = not p.heatmap
-    C.stdev_scale = p.stdev
-    C.averages = p.averages
-
-    C.placement = cfg.memory.placement
-    C.hardware_cxl = cfg.memory.placement == "locks"
-    C.numa_node = cfg.memory.node
-    C.build_dir = build_dir or default_build_dir(C.hardware_cxl)
-    if skip_build is None:
-        skip_build = os.environ.get("MUTEX_BENCH_SKIP_BUILD") == "1"
-    C.skip_build = skip_build
-
-    level = getattr(logging, cfg.output.log_level.upper())
-    C.log = level
-    logger.setLevel(level)
-
-
-def _tigon_variant(cfg: ExperimentConfig) -> str:
-    C = Constants
-    run_seconds = max(1, int(cfg.seconds))
-    warmup = tigon_warmup_seconds(cfg.seconds, C.tigon_warmup_seconds)
-    if C.tigon_partition_ratio is not None:
-        partition_part = f"partition-ratio-{C.tigon_partition_ratio}"
-    elif C.tigon_partitions is not None:
-        partition_part = f"partitions-{C.tigon_partitions}"
-    else:
-        partition_part = "partitions-auto"
-    parts = [
-        f"query-{C.tigon_query}",
-        f"protocol-{C.tigon_protocol}",
-        partition_part,
-        f"run-{run_seconds}s",
-        f"warmup-{warmup}s",
-    ]
-    if cfg.bench == "tigon_tpcc":
-        parts += [f"neworder-{C.tigon_neworder_dist}", f"payment-{C.tigon_payment_dist}"]
-    else:
-        parts += [
-            f"rw-{C.tigon_read_write_ratio}",
-            f"ro-{C.tigon_read_only_ratio}",
-            f"cross-{C.tigon_cross_ratio}",
-            f"crossparts-{C.tigon_cross_partitions}",
-            f"keys-{C.tigon_keys}",
-            f"zipf-{C.tigon_zipf:g}",
-        ]
-    return "-" + "-".join(parts)

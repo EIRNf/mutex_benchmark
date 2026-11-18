@@ -9,14 +9,13 @@ from unittest.mock import patch
 from scripts.args import build_parser, config_from_args, init_args, render_for_cli
 from scripts.config import (
     ConfigError,
-    apply_to_constants,
     config_from_data,
     config_from_toml,
     load_config,
     to_toml,
 )
-from scripts.constants import Constants
 from scripts.runner import get_command, get_data_file_name
+from scripts.settings import resolve_run
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -151,29 +150,26 @@ class FlagCliTests(unittest.TestCase):
 
 
 class PlacementTests(unittest.TestCase):
-    def apply(self, *overrides):
-        apply_to_constants(config_from_toml(THROUGHPUT, list(overrides)))
-
-    def tearDown(self):
-        self.apply()  # leave Constants without placement for other tests
+    def run_for(self, *overrides):
+        return resolve_run(config_from_toml(THROUGHPUT, list(overrides)), skip_build=False)
 
     def test_process_placement_wraps_each_benchmark_in_numactl(self):
-        self.apply("memory.placement=process", "memory.node=1")
-        command = get_command("spin", threads=4)
+        run = self.run_for("memory.placement=process", "memory.node=1")
+        command = get_command(run, "spin", threads=4)
         self.assertEqual(command[:2], ["numactl", "--membind=1"])
-        self.assertIn("-membind-node1-", get_data_file_name("spin", 0, threads=4))
-        self.assertFalse(Constants.hardware_cxl)
+        self.assertIn("-membind-node1-", get_data_file_name(run, "spin", 0, threads=4))
+        self.assertFalse(run.hardware_cxl)
 
     def test_lock_placement_uses_the_hardware_cxl_build(self):
-        self.apply("memory.placement=locks", "memory.node=2")
-        self.assertNotEqual(get_command("spin", threads=4)[0], "numactl")
-        self.assertIn("-cxl-hw-node2-", get_data_file_name("spin", 0, threads=4))
-        self.assertTrue(Constants.hardware_cxl)
+        run = self.run_for("memory.placement=locks", "memory.node=2")
+        self.assertNotEqual(get_command(run, "spin", threads=4)[0], "numactl")
+        self.assertIn("-cxl-hw-node2-", get_data_file_name(run, "spin", 0, threads=4))
+        self.assertTrue(run.hardware_cxl)
 
     def test_no_placement_leaves_commands_and_names_unchanged(self):
-        self.apply()
-        self.assertNotEqual(get_command("spin", threads=4)[0], "numactl")
-        self.assertNotIn("node", Path(get_data_file_name("spin", 0, threads=4)).name)
+        run = self.run_for()
+        self.assertNotEqual(get_command(run, "spin", threads=4)[0], "numactl")
+        self.assertNotIn("node", Path(get_data_file_name(run, "spin", 0, threads=4)).name)
 
 
 class EntryPointTests(unittest.TestCase):

@@ -8,7 +8,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts.args import init_args
-from scripts.constants import Constants
 from scripts.runner import _run_command_to_csv, get_command, get_data_file_name
 
 
@@ -36,10 +35,10 @@ class TigonConfigurationTests(unittest.TestCase):
             return init_args()
 
     def test_ycsb_defaults_are_explicit_in_command_and_artifact_name(self):
-        self.parse_args("--bench", "tigon")
+        run = self.parse_args("--bench", "tigon")
 
         with self.assertLogs("scripts.logger", level="INFO") as logs:
-            command = get_command("exp_spin", threads=4)
+            command = get_command(run, "exp_spin", threads=4)
         self.assertIn("--query=rmw", command)
         self.assertIn("--protocol=TwoPL", command)
         self.assertIn("--partition_num=4", command)
@@ -49,14 +48,14 @@ class TigonConfigurationTests(unittest.TestCase):
         self.assertIn("app=YCSB query=rmw protocol=TwoPL", logs.output[0])
         self.assertIn("servers=127.0.0.1:1234", logs.output[0])
 
-        data_file = get_data_file_name("exp_spin", 0, threads=4)
+        data_file = get_data_file_name(run, "exp_spin", 0, threads=4)
         self.assertIn("query-rmw", data_file)
         self.assertIn("protocol-TwoPL", data_file)
         self.assertIn("partitions-4", data_file)
         self.assertIn("keys-200000", data_file)
 
     def test_ycsb_query_mix_and_skew_are_configurable(self):
-        self.parse_args(
+        run = self.parse_args(
             "--bench",
             "tigon_ycsb",
             "--tigon-query",
@@ -65,25 +64,25 @@ class TigonConfigurationTests(unittest.TestCase):
             "0.8",
         )
 
-        command = get_command("mcs", threads=4)
+        command = get_command(run, "mcs", threads=4)
         self.assertIn("--query=scan", command)
         self.assertIn("--zipf=0.8", command)
-        self.assertIn("query-scan", get_data_file_name("mcs", 0, threads=4))
+        self.assertIn("query-scan", get_data_file_name(run, "mcs", 0, threads=4))
 
     def test_partition_ratio_scales_with_each_swept_thread_count(self):
-        self.parse_args(
+        run = self.parse_args(
             "--bench",
             "tigon_ycsb",
             "--tigon-partition-ratio",
             "half",
         )
 
-        self.assertIn("--partition_num=2", get_command("mcs", threads=4))
-        self.assertIn("--partition_num=1", get_command("mcs", threads=1))
-        self.assertIn("partition-ratio-half", get_data_file_name("mcs", 0, threads=4))
+        self.assertIn("--partition_num=2", get_command(run, "mcs", threads=4))
+        self.assertIn("--partition_num=1", get_command(run, "mcs", threads=1))
+        self.assertIn("partition-ratio-half", get_data_file_name(run, "mcs", 0, threads=4))
 
     def test_tpc_c_workload_and_partition_count_are_configurable(self):
-        self.parse_args(
+        run = self.parse_args(
             "--bench",
             "tigon_tpcc",
             "--tigon-query",
@@ -100,7 +99,7 @@ class TigonConfigurationTests(unittest.TestCase):
             "35",
         )
 
-        command = get_command("ticket", threads=4)
+        command = get_command(run, "ticket", threads=4)
         self.assertIn("--query=neworder", command)
         self.assertIn("--protocol=Silo", command)
         self.assertIn("--partition_num=2", command)
@@ -109,7 +108,7 @@ class TigonConfigurationTests(unittest.TestCase):
         self.assertIn("--payment_dist=35", command)
         self.assertNotIn("--keys=200000", command)
 
-        data_file = get_data_file_name("ticket", 0, threads=4)
+        data_file = get_data_file_name(run, "ticket", 0, threads=4)
         self.assertIn("query-neworder", data_file)
         self.assertIn("neworder-25", data_file)
         self.assertIn("payment-35", data_file)
@@ -121,7 +120,7 @@ class TigonConfigurationTests(unittest.TestCase):
 
     def test_default_reuse_can_read_legacy_tigon_csv_names(self):
         with tempfile.TemporaryDirectory() as data_folder:
-            self.parse_args(
+            run = self.parse_args(
                 "--bench",
                 "tigon_ycsb",
                 "--reuse-data",
@@ -134,7 +133,7 @@ class TigonConfigurationTests(unittest.TestCase):
             legacy_path.write_text("0,5.0,1\n", encoding="utf-8")
 
             self.assertEqual(
-                get_data_file_name("exp_spin", 0, threads=4),
+                get_data_file_name(run, "exp_spin", 0, threads=4),
                 str(legacy_path),
             )
 
@@ -145,10 +144,10 @@ class TigonConfigurationTests(unittest.TestCase):
             stdout=b"benchmark stdout\n",
             stderr=b"last diagnostic\n",
         )
-        with patch.object(Constants, "hardware_cxl", False, create=True):
-            with patch("scripts.runner.subprocess.run", return_value=result):
-                with self.assertRaises(RuntimeError) as error:
-                    _run_command_to_csv(["benchmark"], timeout_s=10)
+        run = self.parse_args()  # placement none: no NUMA environment for the child
+        with patch("scripts.runner.subprocess.run", return_value=result):
+            with self.assertRaises(RuntimeError) as error:
+                _run_command_to_csv(run, ["benchmark"], timeout_s=10)
 
         message = str(error.exception)
         self.assertIn("terminated by SIGKILL (9)", message)

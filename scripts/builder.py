@@ -1,4 +1,4 @@
-from .constants import *
+from .constants import Constants
 from .logger import logger
 
 import json
@@ -68,9 +68,9 @@ def _run_checked(command, error_message):
         raise RuntimeError(error_message)
 
 
-def prepare_output_dirs():
-    """Create the folders the configured run reads from or writes to."""
-    for folder in (Constants.data_folder, Constants.figs_folder, Constants.logs_folder):
+def prepare_output_dirs(run):
+    """Create the folders a run reads from or writes to."""
+    for folder in (run.data_folder, run.figs_folder, run.logs_folder):
         os.makedirs(folder, exist_ok=True)
 
 

@@ -20,7 +20,6 @@ import os
 from math import ceil
 from collections import OrderedDict
 
-from .constants import Constants
 from .logger import logger
 from .runner import placement_tag
 
@@ -109,10 +108,10 @@ def auto_group_mutexes(mutex_names):
 _STYLE_CACHE = {}
 
 
-def _compute_all_styles():
-    """Build (color, linestyle, marker) for every mutex in Constants.mutex_names."""
+def _compute_all_styles(mutex_names):
+    """Build (color, linestyle, marker) for every mutex in *mutex_names*."""
     _STYLE_CACHE.clear()
-    for i, name in enumerate(dict.fromkeys(Constants.mutex_names)):
+    for i, name in enumerate(dict.fromkeys(mutex_names)):
         _STYLE_CACHE[name] = (
             SERIES_COLORS[i % len(SERIES_COLORS)],
             SERIES_LINESTYLES[(i // len(SERIES_COLORS)) % len(SERIES_LINESTYLES)],
@@ -121,9 +120,7 @@ def _compute_all_styles():
 
 
 def get_mutex_style(mutex_name):
-    """Return (color, linestyle, marker) for *mutex_name*."""
-    if not _STYLE_CACHE:
-        _compute_all_styles()
+    """Return (color, linestyle, marker) for *mutex_name* (see _compute_all_styles)."""
     return _STYLE_CACHE.get(mutex_name, ('#333333', '-', 'o'))
 
 
@@ -131,28 +128,28 @@ def get_mutex_style(mutex_name):
 #  FILE SAVING
 # ════════════════════════════════════════════════════════════════
 
-def get_savefig_filepath(suffix=""):
+def get_savefig_filepath(run, suffix=""):
     from os.path import isfile
     from datetime import datetime
 
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
-    capture = getattr(Constants, "capture", "latency")
-    bench = Constants.bench + Constants.bench_variant
-    alloc = placement_tag() or "malloc"
+    capture = run.capture
+    bench = run.bench + run.bench_variant
+    alloc = placement_tag(run) or "malloc"
 
     sweep_part = ""
-    if Constants.iter:
-        var = Constants.iter_variable_name
-        r = Constants.iter_range        # [start, stop+1, step]
+    if run.iter:
+        var = run.iter_variable_name
+        r = run.iter_range        # [start, stop+1, step]
         sweep_part = f"-sweep-{var}-{r[0]}to{r[1]-1}s{r[2]}"
 
     run_part = (
-        f"t{Constants.bench_n_threads}"
-        f"-s{Constants.bench_n_seconds}"
-        f"-r{Constants.n_program_iterations}"
+        f"t{run.bench_n_threads}"
+        f"-s{run.bench_n_seconds}"
+        f"-r{run.n_program_iterations}"
     )
 
-    figs_dir = Constants.figs_folder
+    figs_dir = run.figs_folder
     os.makedirs(figs_dir, exist_ok=True)
     base = f"{figs_dir}/{ts}-{bench}-{capture}{sweep_part}-{run_part}-{alloc}"
 
@@ -206,14 +203,14 @@ def _style_legend(ax, ncols=None):
             pass
 
 
-def display(axes=None, tight_layout=True, suffix=""):
+def display(run, axes=None, tight_layout=True, suffix=""):
     """Style legends, save figure, and (only if --show was passed) plt.show().
 
     plt.show() blocks waiting for a GUI event loop. Matplotlib reports
     interactive-looking backends (e.g. macosx) as usable even when there is
     no real foreground session to display a window in (e.g. run from a
     script/CI/background process), so it isn't safe to auto-detect this --
-    showing is opt-in via Constants.show instead. The figure is always saved
+    showing is opt-in via run.show instead. The figure is always saved
     to disk regardless, so no output is lost by not showing it.
     """
     if axes is not None:
@@ -224,10 +221,10 @@ def display(axes=None, tight_layout=True, suffix=""):
         _style_legend(plt.gca())
     if tight_layout:
         plt.tight_layout(pad=TIGHT_PAD)
-    path = get_savefig_filepath(suffix)
+    path = get_savefig_filepath(run, suffix)
     plt.savefig(path, bbox_inches='tight', dpi=DPI)
     logger.info(f"Saved figure → {path}")
-    if getattr(Constants, 'show', False):
+    if run.show:
         plt.show()
     else:
         plt.close()
@@ -237,17 +234,17 @@ def display(axes=None, tight_layout=True, suffix=""):
 #  CDF PLOTS
 # ════════════════════════════════════════════════════════════════
 
-def get_cdf_title():
-    title = (f"Lock time CDF — {Constants.bench_n_threads} threads, "
-             f"{Constants.bench_n_seconds}s ({Constants.n_program_iterations}×)")
-    if Constants.noncritical_delay != -1:
-        title += f"\nNon-critical delay: {Constants.noncritical_delay:,} ns"
-    if Constants.low_contention:
-        title += f"\nLow-contention: stagger {Constants.stagger_ms} ms"
+def get_cdf_title(run):
+    title = (f"Lock time CDF — {run.bench_n_threads} threads, "
+             f"{run.bench_n_seconds}s ({run.n_program_iterations}×)")
+    if run.noncritical_delay != -1:
+        title += f"\nNon-critical delay: {run.noncritical_delay:,} ns"
+    if run.low_contention:
+        title += f"\nLow-contention: stagger {run.stagger_ms} ms"
     return title
 
 
-def plot_one_cdf(series, mutex_name, *, xlabel, ylabel, title, average_lock_time=None):
+def plot_one_cdf(run, series, mutex_name, *, xlabel, ylabel, title, average_lock_time=None):
     logger.info(f"Plotting CDF for {mutex_name}")
     x_values = series.sort_values().reset_index(drop=True)
     if x_values.size == 0:
@@ -255,7 +252,7 @@ def plot_one_cdf(series, mutex_name, *, xlabel, ylabel, title, average_lock_time
         return
 
     y_values = np.linspace(0, 1, x_values.size)
-    skip = max(1, int(ceil(x_values.size / Constants.max_n_points)))
+    skip = max(1, int(ceil(x_values.size / run.max_n_points)))
     x = x_values[::skip]
     y = y_values[::skip]
 
@@ -265,7 +262,7 @@ def plot_one_cdf(series, mutex_name, *, xlabel, ylabel, title, average_lock_time
     label += f" ({x_values.size:,} pts)"
 
     color, ls, marker = get_mutex_style(mutex_name)
-    if Constants.scatter:
+    if run.scatter:
         plt.scatter(x, y, label=label, s=3, color=color, marker=marker)
     else:
         plt.plot(x, y, label=label, color=color, linestyle=ls,
@@ -278,31 +275,31 @@ def plot_one_cdf(series, mutex_name, *, xlabel, ylabel, title, average_lock_time
     plt.ylabel(ylabel)
 
 
-def plot_lock_level(data):
+def plot_lock_level(run, data):
     _apply_style()
-    _compute_all_styles()
+    _compute_all_styles(run.mutex_names)
     plt.figure(figsize=FIGURE_SIZE)
     for mutex_name, df in data:
         avg = df['Time Spent'].mean()
         logger.info(f"Mutex {mutex_name:<24} avg={avg:.9f}  std={df['Time Spent'].std():.9f}")
         plot_one_cdf(
-            df["Time Spent"], mutex_name,
+            run, df["Time Spent"], mutex_name,
             xlabel="Lock time (seconds)",
             ylabel="Fraction of iterations ≤ x",
             title=mutex_name,
             average_lock_time=avg,
         )
-    plt.title(get_cdf_title())
-    if Constants.log_scale and not Constants.iter:
+    plt.title(get_cdf_title(run))
+    if run.log_scale and not run.iter:
         plt.xscale('log')
-    display()
+    display(run)
 
 
 # ════════════════════════════════════════════════════════════════
 #  ITERATION PLOTS  (throughput vs threads / delay)
 # ════════════════════════════════════════════════════════════════
 
-def _aggregate_total_throughput(df):
+def _aggregate_total_throughput(df, var):
     """Sum per-thread iterations into per-run totals.
 
     Raw data has one row per thread per run.  We group by
@@ -310,28 +307,27 @@ def _aggregate_total_throughput(df):
     observation is the *total* work done in a single run —
     not a single thread's share (which hides starvation).
     """
-    var = Constants.iter_variable_name
     agg = (df.groupby([var, 'run'], as_index=False)['# Iterations']
              .sum()
              .rename(columns={'# Iterations': 'Iterations'}))
     return agg
 
 
-def _iter_title():
-    bench = Constants.bench.upper()
+def _iter_title(run):
+    bench = run.bench.upper()
     return (f"{bench} contention — total iterations vs "
-            f"{Constants.iter_variable_name.replace('_', ' ')}\n"
-            f"({Constants.bench_n_seconds}s per run, "
-            f"{Constants.n_program_iterations} repetitions)")
+            f"{run.iter_variable_name.replace('_', ' ')}\n"
+            f"({run.bench_n_seconds}s per run, "
+            f"{run.n_program_iterations} repetitions)")
 
 
-def plot_iter(data):
+def plot_iter(run, data):
     """Auto-select single or faceted layout based on series count."""
     _apply_style()
-    _compute_all_styles()
+    _compute_all_styles(run.mutex_names)
     data_list = list(data)  # consume generator once
 
-    faceted_flag = getattr(Constants, 'faceted', None)
+    faceted_flag = run.faceted
     if faceted_flag is True:
         use_faceted = True
     elif faceted_flag is False:
@@ -340,21 +336,21 @@ def plot_iter(data):
         use_faceted = len(data_list) > AUTO_FACET_THRESHOLD
 
     if use_faceted:
-        _plot_iter_faceted(data_list)
+        _plot_iter_faceted(run, data_list)
     else:
-        _plot_iter_single(data_list)
+        _plot_iter_single(run, data_list)
 
 
-def _plot_iter_single(data_list):
+def _plot_iter_single(run, data_list):
     """All series on one axes — best for ≤ ~10 series."""
     fig, ax = plt.subplots(figsize=FIGURE_SIZE)
     for mutex_name, df in data_list:
         logger.info(f"Plotting {mutex_name}")
         color, ls, marker = get_mutex_style(mutex_name)
-        agg = _aggregate_total_throughput(df)
+        agg = _aggregate_total_throughput(df, run.iter_variable_name)
         sns.lineplot(
             data=agg,
-            x=Constants.iter_variable_name,
+            x=run.iter_variable_name,
             y="Iterations",
             errorbar=None,
             label=mutex_name,
@@ -368,13 +364,13 @@ def _plot_iter_single(data_list):
         )
     ax.set_yscale("log")
     ax.grid(True, linestyle=GRID_STYLE, alpha=GRID_ALPHA, linewidth=0.5)
-    ax.set_title(_iter_title())
-    ax.set_xlabel(Constants.iter_variable_name.replace('_', ' ').title())
+    ax.set_title(_iter_title(run))
+    ax.set_xlabel(run.iter_variable_name.replace('_', ' ').title())
     ax.set_ylabel("Total Iterations (all threads)")
-    display(ax)
+    display(run, ax)
 
 
-def _plot_iter_faceted(data_list):
+def _plot_iter_faceted(run, data_list):
     """One subplot per mutex family; baselines drawn faintly in every panel."""
     grouped = OrderedDict()
     baseline_entries = []
@@ -396,7 +392,7 @@ def _plot_iter_faceted(data_list):
     # Consistent y-limits across all panels using aggregated totals
     all_totals = []
     for _, df in data_list:
-        agg = _aggregate_total_throughput(df)
+        agg = _aggregate_total_throughput(df, run.iter_variable_name)
         all_totals.append(agg['Iterations'].values)
     all_totals = np.concatenate(all_totals)
     y_lo = max(1, float(all_totals.min()) * 0.5)
@@ -409,9 +405,9 @@ def _plot_iter_faceted(data_list):
         # Baseline reference in non-baseline panels — visible but secondary
         if group_name != 'Baseline':
             for bname, bdf in baseline_entries:
-                bagg = _aggregate_total_throughput(bdf)
+                bagg = _aggregate_total_throughput(bdf, run.iter_variable_name)
                 bcolor, bls, bmarker = get_mutex_style(bname)
-                bmean = bagg.groupby(Constants.iter_variable_name)['Iterations'].mean()
+                bmean = bagg.groupby(run.iter_variable_name)['Iterations'].mean()
                 ax.plot(
                     bmean.index, bmean.values,
                     label=f"{bname} (ref)", color=bcolor,
@@ -422,8 +418,8 @@ def _plot_iter_faceted(data_list):
             if len(baseline_entries) >= 2:
                 baseline_means = []
                 for _, bdf in baseline_entries:
-                    bagg = _aggregate_total_throughput(bdf)
-                    bmean = bagg.groupby(Constants.iter_variable_name)['Iterations'].mean()
+                    bagg = _aggregate_total_throughput(bdf, run.iter_variable_name)
+                    bmean = bagg.groupby(run.iter_variable_name)['Iterations'].mean()
                     baseline_means.append(bmean)
                 lo = pd.concat(baseline_means, axis=1).min(axis=1)
                 hi = pd.concat(baseline_means, axis=1).max(axis=1)
@@ -435,10 +431,10 @@ def _plot_iter_faceted(data_list):
         for mutex_name, df in members:
             logger.info(f"[{group_name}] Plotting {mutex_name}")
             color, ls, marker = get_mutex_style(mutex_name)
-            agg = _aggregate_total_throughput(df)
+            agg = _aggregate_total_throughput(df, run.iter_variable_name)
             sns.lineplot(
                 data=agg,
-                x=Constants.iter_variable_name, y="Iterations",
+                x=run.iter_variable_name, y="Iterations",
                 errorbar=None, label=mutex_name,
                 marker=marker, color=color, linestyle=ls,
                 linewidth=LINE_WIDTH, markersize=MARKER_SIZE, alpha=ALPHA,
@@ -449,7 +445,7 @@ def _plot_iter_faceted(data_list):
         ax.set_ylim(y_lo, y_hi)
         ax.grid(True, linestyle=GRID_STYLE, alpha=GRID_ALPHA, linewidth=0.5)
         ax.set_title(group_name, fontsize=TITLE_FONT_SIZE - 1, fontweight='bold')
-        ax.set_xlabel(Constants.iter_variable_name.replace('_', ' ').title())
+        ax.set_xlabel(run.iter_variable_name.replace('_', ' ').title())
         ax.set_ylabel("Total Iterations" if c == 0 else "")
 
     # Hide unused subplot slots
@@ -457,15 +453,14 @@ def _plot_iter_faceted(data_list):
         r, c = divmod(idx, ncols)
         axes[r][c].set_visible(False)
 
-    fig.suptitle(_iter_title(), fontsize=TITLE_FONT_SIZE + 1, fontweight='bold')
-    display(axes.flatten()[:n_groups])
+    fig.suptitle(_iter_title(run), fontsize=TITLE_FONT_SIZE + 1, fontweight='bold')
+    display(run, axes.flatten()[:n_groups])
 
 
-def _relative_throughput(data_list, ref_name):
+def _relative_throughput(data_list, ref_name, var):
     """Mean per-run total iterations divided by the reference at each point."""
-    var = Constants.iter_variable_name
     means = {
-        name: _aggregate_total_throughput(df).groupby(var)['Iterations'].mean()
+        name: _aggregate_total_throughput(df, var).groupby(var)['Iterations'].mean()
         for name, df in data_list
     }
     if ref_name not in means:
@@ -476,10 +471,10 @@ def _relative_throughput(data_list, ref_name):
     return totals.where(totals >= 0).div(reference.where(reference > 0), axis='columns')
 
 
-def plot_throughput_heatmap(data, ref_name):
+def plot_throughput_heatmap(run, data, ref_name):
     """Plot throughput ratios relative to a chosen mutex at each sweep point."""
     _apply_style()
-    ratios = _relative_throughput(list(data), ref_name)
+    ratios = _relative_throughput(list(data), ref_name, run.iter_variable_name)
     if ratios is None:
         return
     finite = ratios.where(np.isfinite(ratios))
@@ -501,23 +496,22 @@ def plot_throughput_heatmap(data, ref_name):
                 cbar_kws={'label': f'Total iterations / {ref_name} (1 = equal)'})
     ax.set_title(f"Relative throughput vs {ref_name}\n"
                  "Mean run totals; grey = missing or invalid reference")
-    ax.set_xlabel(Constants.iter_variable_name.replace('_', ' ').title())
+    ax.set_xlabel(run.iter_variable_name.replace('_', ' ').title())
     ax.set_ylabel("Mutex")
-    display(ax, suffix="-heatmap")
+    display(run, ax, suffix="-heatmap")
 
 
 # ════════════════════════════════════════════════════════════════
 #  VARIABILITY PLOT  (coefficient of variation vs iter variable)
 # ════════════════════════════════════════════════════════════════
 
-def _compute_variability(df):
+def _compute_variability(df, var):
     """Compute per-thread-count variability stats from aggregated run totals.
 
     Returns a DataFrame with columns:
         iter_variable, mean, std, cv  (cv = std / mean)
     """
-    var = Constants.iter_variable_name
-    agg = _aggregate_total_throughput(df)
+    agg = _aggregate_total_throughput(df, var)
     stats = (agg.groupby(var)['Iterations']
                 .agg(['mean', 'std'])
                 .reset_index())
@@ -526,24 +520,24 @@ def _compute_variability(df):
     return stats
 
 
-def _variability_title():
-    bench = Constants.bench.upper()
+def _variability_title(run):
+    bench = run.bench.upper()
     return (f"{bench} contention — run-to-run variability vs "
-            f"{Constants.iter_variable_name.replace('_', ' ')}\n"
-            f"({Constants.bench_n_seconds}s per run, "
-            f"{Constants.n_program_iterations} repetitions)")
+            f"{run.iter_variable_name.replace('_', ' ')}\n"
+            f"({run.bench_n_seconds}s per run, "
+            f"{run.n_program_iterations} repetitions)")
 
 
-def plot_variability(data):
+def plot_variability(run, data):
     """Plot coefficient of variation (std/mean) of total throughput.
 
     Auto-facets the same way as plot_iter.
     """
     _apply_style()
-    _compute_all_styles()
+    _compute_all_styles(run.mutex_names)
     data_list = list(data)
 
-    faceted_flag = getattr(Constants, 'faceted', None)
+    faceted_flag = run.faceted
     if faceted_flag is True:
         use_faceted = True
     elif faceted_flag is False:
@@ -552,18 +546,18 @@ def plot_variability(data):
         use_faceted = len(data_list) > AUTO_FACET_THRESHOLD
 
     if use_faceted:
-        _plot_variability_faceted(data_list)
+        _plot_variability_faceted(run, data_list)
     else:
-        _plot_variability_single(data_list)
+        _plot_variability_single(run, data_list)
 
 
-def _plot_variability_single(data_list):
+def _plot_variability_single(run, data_list):
     fig, ax = plt.subplots(figsize=FIGURE_SIZE)
-    var = Constants.iter_variable_name
+    var = run.iter_variable_name
     for mutex_name, df in data_list:
         logger.info(f"Variability: Plotting {mutex_name}")
         color, ls, marker = get_mutex_style(mutex_name)
-        stats = _compute_variability(df)
+        stats = _compute_variability(df, var)
         ax.plot(
             stats[var], stats['cv'],
             label=mutex_name, color=color, linestyle=ls,
@@ -572,15 +566,15 @@ def _plot_variability_single(data_list):
         )
     ax.set_xlabel(var.replace('_', ' ').title())
     ax.set_ylabel('Coefficient of Variation (σ / μ)')
-    ax.set_title(_variability_title())
+    ax.set_title(_variability_title(run))
     ax.grid(True, linestyle=GRID_STYLE, alpha=GRID_ALPHA, linewidth=0.5)
-    display(ax)
+    display(run, ax)
 
 
-def _plot_variability_faceted(data_list):
+def _plot_variability_faceted(run, data_list):
     grouped = OrderedDict()
     baseline_entries = []
-    var = Constants.iter_variable_name
+    var = run.iter_variable_name
     for mutex_name, df in data_list:
         group, _, _ = classify_mutex(mutex_name)
         grouped.setdefault(group, []).append((mutex_name, df))
@@ -603,7 +597,7 @@ def _plot_variability_faceted(data_list):
         # Baseline reference — visible but secondary
         if group_name != 'Baseline':
             for bname, bdf in baseline_entries:
-                bstats = _compute_variability(bdf)
+                bstats = _compute_variability(bdf, var)
                 bcolor, bls, bmarker = get_mutex_style(bname)
                 ax.plot(
                     bstats[var], bstats['cv'],
@@ -615,7 +609,7 @@ def _plot_variability_faceted(data_list):
         for mutex_name, df in members:
             logger.info(f"[{group_name}] Variability: {mutex_name}")
             color, ls, marker = get_mutex_style(mutex_name)
-            stats = _compute_variability(df)
+            stats = _compute_variability(df, var)
             ax.plot(
                 stats[var], stats['cv'],
                 label=mutex_name, color=color, linestyle=ls,
@@ -632,17 +626,17 @@ def _plot_variability_faceted(data_list):
         r, c = divmod(idx, ncols)
         axes[r][c].set_visible(False)
 
-    fig.suptitle(_variability_title(), fontsize=TITLE_FONT_SIZE + 1, fontweight='bold')
-    display(axes.flatten()[:n_groups])
+    fig.suptitle(_variability_title(run), fontsize=TITLE_FONT_SIZE + 1, fontweight='bold')
+    display(run, axes.flatten()[:n_groups])
 
 
 # ════════════════════════════════════════════════════════════════
 #  RUSAGE PLOTS
 # ════════════════════════════════════════════════════════════════
 
-def plot_iter_rusage(data):
+def plot_iter_rusage(run, data):
     _apply_style()
-    _compute_all_styles()
+    _compute_all_styles(run.mutex_names)
     fig, axis = plt.subplots(1, 2, figsize=(FIGURE_SIZE[0] * 1.3, FIGURE_SIZE[1]))
     for mutex_name, df in data:
         color, ls, marker = get_mutex_style(mutex_name)
@@ -653,35 +647,35 @@ def plot_iter_rusage(data):
                 color=color, linestyle=ls, marker=marker,
                 linewidth=LINE_WIDTH, markersize=MARKER_SIZE, alpha=ALPHA,
             )
-            ax.set_xlabel(Constants.iter_variable_name.replace('_', ' ').title())
+            ax.set_xlabel(run.iter_variable_name.replace('_', ' ').title())
             ax.set_ylabel(ylabel)
-            if Constants.log_scale:
+            if run.log_scale:
                 ax.set_yscale("log")
             ax.grid(True, linestyle=GRID_STYLE, alpha=GRID_ALPHA, linewidth=0.5)
-    axis[0].set_title(f"User time vs threads ({Constants.bench_n_seconds}s, {Constants.n_program_iterations}×)")
-    axis[1].set_title(f"System time vs threads ({Constants.bench_n_seconds}s, {Constants.n_program_iterations}×)")
-    display(axis, tight_layout=False)
+    axis[0].set_title(f"User time vs threads ({run.bench_n_seconds}s, {run.n_program_iterations}×)")
+    axis[1].set_title(f"System time vs threads ({run.bench_n_seconds}s, {run.n_program_iterations}×)")
+    display(run, axis, tight_layout=False)
 
 
 # ════════════════════════════════════════════════════════════════
 #  SPEEDUP TABLE
 # ════════════════════════════════════════════════════════════════
 
-def print_speedup_table(data):
+def print_speedup_table(run, data):
     """Print and save a speedup table relative to a reference mutex.
 
     Each cell shows  mutex_mean / reference_mean  at a given thread count.
     Values > 1 mean the mutex is *faster* than the reference.
     """
-    _compute_all_styles()
-    ref_name = getattr(Constants, 'speedup_ref', None) or 'exp_spin'
-    var = Constants.iter_variable_name
+    _compute_all_styles(run.mutex_names)
+    ref_name = run.speedup_ref or 'exp_spin'
+    var = run.iter_variable_name
     data_list = list(data)
 
     # Build {mutex_name: {var_value: mean_iterations}}
     means = OrderedDict()
     for mutex_name, df in data_list:
-        agg = _aggregate_total_throughput(df)
+        agg = _aggregate_total_throughput(df, run.iter_variable_name)
         m = agg.groupby(var)['Iterations'].mean()
         means[mutex_name] = m
 
@@ -724,12 +718,12 @@ def print_speedup_table(data):
     print(table_str)
 
     # ── Save to file ───────────────────────────────────────────
-    figs_dir = Constants.figs_folder
+    figs_dir = run.figs_folder
     os.makedirs(figs_dir, exist_ok=True)
     from datetime import datetime
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
-    triplet = f"{Constants.bench_n_threads}_{Constants.bench_n_seconds}_{Constants.n_program_iterations}"
-    variant = Constants.bench_variant
+    triplet = f"{run.bench_n_threads}_{run.bench_n_seconds}_{run.n_program_iterations}"
+    variant = run.bench_variant
     txt_path = f"{figs_dir}/{ts}_{triplet}{variant}-speedup.txt"
     csv_path = f"{figs_dir}/{ts}_{triplet}{variant}-speedup.csv"
 

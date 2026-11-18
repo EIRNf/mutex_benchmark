@@ -11,8 +11,9 @@ from pathlib import Path
 import pandas as pd
 
 from scripts.compare import compare_suite
-from scripts.config import ConfigError, RunPaths, apply_to_constants
+from scripts.config import ConfigError, RunPaths
 from scripts.runner import get_data_file_name
+from scripts.settings import resolve_run
 from scripts.suite import SuiteRunner, suite_from_data
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,13 +62,13 @@ def make_suite(suite_dir, text=SUITE, skip=(), status=None):
             continue
         run_dir = os.path.join(suite_dir, *run.key.split("/"))
         os.makedirs(os.path.join(run_dir, "raw"))
-        apply_to_constants(run.cfg, RunPaths.for_existing_run(run_dir))
+        settings = resolve_run(run.cfg, RunPaths.for_existing_run(run_dir))
         seconds = run.cfg.seconds
         for rep in range(run.cfg.repetitions):
             for threads in range(run.cfg.sweep.start, run.cfg.sweep.stop + 1, run.cfg.sweep.step):
                 total = throughput(run.environment, run.experiment, threads, rep) * seconds
                 for lock in ("spin", "ticket"):
-                    with open(get_data_file_name(lock, rep, threads=threads), "w", encoding="utf-8") as handle:
+                    with open(get_data_file_name(settings, lock, rep, threads=threads), "w", encoding="utf-8") as handle:
                         for thread in range(threads):  # split the total evenly over the threads
                             handle.write(f"{thread},{seconds},{total / threads}\n")
         record = {"status": (status or {}).get(run.key, "complete")}

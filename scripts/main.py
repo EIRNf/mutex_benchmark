@@ -7,98 +7,101 @@ from .args import init_args
 from .constants import Constants
 from .rundir import RunRecord
 
-def run_experiment_lock_level():
-    if not Constants.skip_experiment:
-        run_experiment_lock_level_single_threaded()
-    if Constants.averages:
-        debug_print_averages_lock_level()
-    if not Constants.skip_plotting:
-        data = load_data_lock_level()
-        plot_lock_level(data)
 
-def run_experiment_iter():
-    if not Constants.skip_experiment:
-        run_experiment_iter_single_threaded()
-    if not Constants.skip_plotting:
-        data = list(load_data_iter())
-        if Constants.rusage:
-            plot_iter_rusage(data)
+def run_experiment_lock_level(run):
+    if not run.skip_experiment:
+        run_experiment_lock_level_single_threaded(run)
+    if run.averages:
+        debug_print_averages_lock_level(run)
+    if not run.skip_plotting:
+        data = load_data_lock_level(run)
+        plot_lock_level(run, data)
+
+
+def run_experiment_iter(run):
+    if not run.skip_experiment:
+        run_experiment_iter_single_threaded(run)
+    if not run.skip_plotting:
+        data = list(load_data_iter(run))
+        if run.rusage:
+            plot_iter_rusage(run, data)
         else:
-            plot_iter(data)
-            if not Constants.no_heatmap:
-                ref = Constants.heatmap_ref or Constants.speedup_ref
+            plot_iter(run, data)
+            if not run.no_heatmap:
+                ref = run.heatmap_ref or run.speedup_ref
                 if ref is None:
                     ref = Constants.Defaults.HEATMAP_REFERENCE
-                    if ref not in Constants.mutex_names and data:
+                    if ref not in run.mutex_names and data:
                         ref = data[0][0]
                         logger.warning("Default heatmap reference is not selected; using '%s'", ref)
-                plot_throughput_heatmap(data, ref)
-        if getattr(Constants, 'variability', False):
-            plot_variability(data)
-    if getattr(Constants, 'speedup', False):
-        data = load_data_iter()
-        print_speedup_table(data)
+                plot_throughput_heatmap(run, data, ref)
+        if run.variability:
+            plot_variability(run, data)
+    if run.speedup:
+        data = load_data_iter(run)
+        print_speedup_table(run, data)
 
-def _dispatch():
-    if Constants.capture == "latency" and Constants.iter:
+
+def _dispatch(run):
+    if run.capture == "latency" and run.iter:
         # Capture-only mode: run sweep and write CSVs without plotting.
-        if not Constants.skip_experiment:
-            run_experiment_iter_single_threaded()
-    elif Constants.capture == "latency":
-        run_experiment_lock_level()
-    elif Constants.capture in ("throughput", "rusage"):
-        run_experiment_iter()
+        if not run.skip_experiment:
+            run_experiment_iter_single_threaded(run)
+    elif run.capture == "latency":
+        run_experiment_lock_level(run)
+    elif run.capture in ("throughput", "rusage"):
+        run_experiment_iter(run)
     else:
-        raise NotImplementedError(f"Capture mode '{Constants.capture}' not recognized")
+        raise NotImplementedError(f"Capture mode '{run.capture}' not recognized")
 
 
-def _build_or_reuse(record):
-    """Build Constants.build_dir (unless skipped) and check it fits this run."""
-    if Constants.skip_build:
-        logger.info("Reusing the existing build in %s/", Constants.build_dir)
+def _build_or_reuse(run, record):
+    """Build run.build_dir (unless skipped) and check it fits this run."""
+    if run.skip_build:
+        logger.info("Reusing the existing build in %s/", run.build_dir)
     else:
         build(
-            Constants.build_dir,
-            hardware_cxl=Constants.hardware_cxl,
-            mutex_names=Constants.mutex_names,
-            tigon=Constants.bench.startswith("tigon"),
+            run.build_dir,
+            hardware_cxl=run.hardware_cxl,
+            mutex_names=run.mutex_names,
+            tigon=run.bench.startswith("tigon"),
         )
     cpp_args = verify_build_matches(
-        Constants.build_dir,
-        hardware_cxl=Constants.hardware_cxl,
-        mutex_names=Constants.mutex_names,
-        placement=Constants.placement,
+        run.build_dir,
+        hardware_cxl=run.hardware_cxl,
+        mutex_names=run.mutex_names,
+        placement=run.placement,
     )
     if record:
         record.update(build={
-            "dir": Constants.build_dir,
+            "dir": run.build_dir,
             "cpp_args": cpp_args,
-            "skipped": Constants.skip_build,
+            "skipped": run.skip_build,
         })
 
 
-def run_configured(cfg):
-    """Run (or, when reusing data, only plot) the experiment loaded into Constants.
+def run_configured(run):
+    """Run (or, when reusing data, only plot) one experiment from its RunSettings.
 
     A new run writes config.toml and run.json into its run folder before
     building, and run.json's final status says whether it completed, failed
     or was interrupted, plus which data points are missing.
     """
-    prepare_output_dirs()
-    init_logger()
-    if Constants.experiment_name:
-        logger.info("Experiment: %s", Constants.experiment_name)
+    prepare_output_dirs(run)
+    init_logger(run)
+    if run.experiment_name:
+        logger.info("Experiment: %s", run.experiment_name)
 
     record = None
-    if not Constants.skip_experiment and Constants.run_dir:
-        record = RunRecord(cfg, Constants.run_dir)
+    if not run.skip_experiment and run.run_dir:
+        record = RunRecord(run)
         record.start()
-        logger.info("Run folder: %s", Constants.run_dir)
+        logger.info("Run folder: %s", run.run_dir)
 
     try:
-        if not Constants.skip_experiment:
-            _build_or_reuse(record)
-        _dispatch()
+        if not run.skip_experiment:
+            _build_or_reuse(run, record)
+        _dispatch(run)
     except KeyboardInterrupt:
         if record:
             record.finish("interrupted")
@@ -119,8 +122,7 @@ def run_configured(cfg):
 
 def main():
     setup()
-    cfg = init_args()
-    run_configured(cfg)
+    run_configured(init_args())
 
 
 if __name__ == "__main__":

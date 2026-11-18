@@ -36,11 +36,11 @@ from .config import (
     CONFIG_FILE,
     ConfigError,
     RunPaths,
-    apply_to_constants,
     check_host,
     load_config,
     to_toml,
 )
+from .settings import resolve_run
 
 _PLOT_OVERRIDABLE = ("plot.", "output.log_level")
 
@@ -179,9 +179,9 @@ def _run(parser, ns):
     except ConfigError as exc:
         parser.error(str(exc))
 
-    apply_to_constants(cfg, paths, build_dir=build_dir, skip_build=True if ns.no_build else None)
+    run = resolve_run(cfg, paths, build_dir=build_dir, skip_build=True if ns.no_build else None)
     from .main import run_configured  # imports plotting stack; keep --print-config light
-    run_configured(cfg)
+    run_configured(run)
     print(f"Run folder: {paths.run_dir}")
     return 0
 
@@ -210,9 +210,8 @@ def _plot(parser, ns):
         print(f"note: this run's status is {record.get('status')!r}; plotting the data it wrote",
               file=sys.stderr)
 
-    apply_to_constants(cfg, paths)
     from .main import run_configured
-    run_configured(cfg)
+    run_configured(resolve_run(cfg, paths))
     print(f"Plots: {paths.plots}")
     return 0
 

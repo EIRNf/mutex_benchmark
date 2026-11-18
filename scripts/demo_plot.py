@@ -15,12 +15,12 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from .constants import Constants
-from .plotter import _apply_style, classify_mutex, get_mutex_style
+from .plotter import _apply_style, _compute_all_styles, get_mutex_style
+
+VAR = "threads"  # the swept variable
 
 # Ensure output directories
-Constants.data_folder = "./data/generated"
-figs_dir = os.path.join(Constants.data_folder, "..", "figs")
+figs_dir = os.path.join("./data/generated", "..", "figs")
 os.makedirs(figs_dir, exist_ok=True)
 
 # Synthetic data parameters
@@ -51,12 +51,7 @@ for i in range(n_mutex):
         suffix = f"exp_spin_{i}"
     base_names.append(prefix + suffix)
 
-Constants.mutex_names = base_names.copy()
-Constants.iter = True
-Constants.iter_variable_name = "threads"
-Constants.n_program_iterations = n_runs
-Constants.bench_n_seconds = 1
-Constants.n_program_iterations = n_runs
+_compute_all_styles(base_names)
 
 # Build synthetic data list for plot_iter: list of (mutex_name, dataframe)
 # Each dataframe must contain columns: [iter_variable_name, 'run', '# Iterations']
@@ -74,7 +69,7 @@ for idx, name in enumerate(base_names):
             mean_value = baseline * (t**0.8) * slope
             value = np.random.lognormal(mean=np.log(mean_value), sigma=0.12)
             rows.append(
-                {Constants.iter_variable_name: t, "run": run, "# Iterations": value}
+                {VAR: t, "run": run, "# Iterations": value}
             )
     df = pd.DataFrame(rows)
     data_list.append((name, df))
@@ -86,12 +81,12 @@ ax = plt.gca()
 for mutex_name, df in data_list:
     color, ls, marker = get_mutex_style(mutex_name)
     # aggregate total throughput per (threads, run)
-    agg = df.groupby([Constants.iter_variable_name, "run"], as_index=False)[
+    agg = df.groupby([VAR, "run"], as_index=False)[
         "# Iterations"
     ].sum()
     # For combined original style, plot every run as a line
     for run_id, sub in agg.groupby("run"):
-        x = sub[Constants.iter_variable_name].values
+        x = sub[VAR].values
         y = sub["# Iterations"].values
         ax.plot(x, y, color=color, linestyle=ls, linewidth=0.8, alpha=0.6)
 
@@ -111,11 +106,11 @@ ax = plt.gca()
 for mutex_name, df in data_list:
     color, ls, marker = get_mutex_style(mutex_name)
     # pivot to compute quantiles across runs for each threads value
-    grouped = df.groupby([Constants.iter_variable_name, "run"], as_index=False)[
+    grouped = df.groupby([VAR, "run"], as_index=False)[
         "# Iterations"
     ].sum()
     pivot = grouped.pivot(
-        index=Constants.iter_variable_name, columns="run", values="# Iterations"
+        index=VAR, columns="run", values="# Iterations"
     )
     # compute quantiles
     q10 = pivot.quantile(0.10, axis=1)
@@ -142,11 +137,11 @@ plt.close()
 # Build matrix (mutex x threads) of median values
 median_matrix = []
 for mutex_name, df in data_list:
-    grouped = df.groupby([Constants.iter_variable_name, "run"], as_index=False)[
+    grouped = df.groupby([VAR, "run"], as_index=False)[
         "# Iterations"
     ].sum()
     pivot = grouped.pivot(
-        index=Constants.iter_variable_name, columns="run", values="# Iterations"
+        index=VAR, columns="run", values="# Iterations"
     )
     median = pivot.quantile(0.5, axis=1)
     median_matrix.append(median.values)

@@ -24,8 +24,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
-from .config import CONFIG_FILE, RECORD_FILE, ExperimentConfig, to_toml
-from .constants import Constants
+from .config import CONFIG_FILE, RECORD_FILE, to_toml
 from .runner import get_data_file_name, placement_tag
 
 _MAX_LISTED_MISSING = 50
@@ -82,24 +81,24 @@ def host_info() -> dict:
     return info
 
 
-def expected_data_files() -> list[str]:
-    """Every CSV path the configured experiment should produce."""
+def expected_data_files(run) -> list[str]:
+    """Every CSV path the run should produce."""
     paths = []
-    for rep in range(Constants.n_program_iterations):
-        if Constants.iter:
-            for value in range(*Constants.iter_range):
-                for mutex_name in Constants.mutex_names:
+    for rep in range(run.n_program_iterations):
+        if run.iter:
+            for value in range(*run.iter_range):
+                for mutex_name in run.mutex_names:
                     paths.append(get_data_file_name(
-                        mutex_name, rep, **{Constants.iter_variable_name: value}
+                        run, mutex_name, rep, **{run.iter_variable_name: value}
                     ))
         else:
-            for mutex_name in Constants.mutex_names:
-                paths.append(get_data_file_name(mutex_name, rep))
+            for mutex_name in run.mutex_names:
+                paths.append(get_data_file_name(run, mutex_name, rep))
     return paths
 
 
-def data_point_summary() -> dict:
-    expected = expected_data_files()
+def data_point_summary(run) -> dict:
+    expected = expected_data_files(run)
     missing = [
         os.path.basename(path) for path in expected
         if not (os.path.isfile(path) and os.path.getsize(path) > 0)
@@ -115,11 +114,12 @@ def data_point_summary() -> dict:
 class RunRecord:
     """Writes config.toml once and keeps run.json current for one run folder."""
 
-    def __init__(self, cfg: ExperimentConfig, run_dir: str):
-        self.run_dir = run_dir
-        self.record_path = os.path.join(run_dir, RECORD_FILE)
+    def __init__(self, run):
+        self.run_dir = run.run_dir
+        self.record_path = os.path.join(self.run_dir, RECORD_FILE)
         self.data: dict = {}
-        self._cfg = cfg
+        self._run = run
+        self._cfg = run.cfg
 
     def start(self):
         os.makedirs(self.run_dir, exist_ok=True)
@@ -131,14 +131,14 @@ class RunRecord:
             "started_utc": utc_now(),
             "finished_utc": None,
             "command": command_line(),
-            "data_folder": Constants.data_folder,
-            "plots_folder": Constants.figs_folder,
-            "logs_folder": Constants.logs_folder,
-            "locks": list(Constants.mutex_names),
+            "data_folder": self._run.data_folder,
+            "plots_folder": self._run.figs_folder,
+            "logs_folder": self._run.logs_folder,
+            "locks": list(self._run.mutex_names),
             "placement": {
-                "mode": Constants.placement,
-                "node": Constants.numa_node,
-                "tag": placement_tag() or None,
+                "mode": self._run.placement,
+                "node": self._run.numa_node,
+                "tag": placement_tag(self._run) or None,
             },
             "git": git_info(),
             "host": host_info(),
@@ -161,7 +161,7 @@ class RunRecord:
         self.data["finished_utc"] = utc_now()
         if error is not None:
             self.data["error"] = error
-        self.data["data_points"] = data_point_summary()
+        self.data["data_points"] = data_point_summary(self._run)
         self._write()
 
     def _write(self):

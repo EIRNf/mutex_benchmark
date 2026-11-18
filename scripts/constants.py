@@ -3,6 +3,9 @@
 import logging
 
 class Constants:
+    """Static defaults and lock sets. Per-run settings live in RunSettings
+    (scripts/settings.py), passed explicitly to each function that needs them."""
+
     class Defaults:
 
         # =====================================================================
@@ -325,7 +328,7 @@ class Constants:
         ]
 
         EXECUTABLE_NAME = "max_contention_bench"
-        # Relative to the build directory (Constants.build_dir).
+        # Relative to the build directory (RunSettings.build_dir).
         BENCH_EXECUTABLES = {
             "max": "apps/max_contention_bench/max_contention_bench",
             "grouped": "apps/grouped_contention_bench/grouped_contention_bench",
@@ -353,63 +356,3 @@ class Constants:
         LOW_CONTENTION = False
         STAGGER_MS     = 0
         BENCH = 'max'
-
-    mutex_names          = Defaults.MUTEX_NAMES
-    bench_n_threads: int = Defaults.BENCH_N_THREADS
-    bench_n_seconds: int = Defaults.BENCH_N_SECONDS
-    n_program_iterations = Defaults.N_PROGRAM_ITERATIONS
-    data_folder          = Defaults.DATA_FOLDER
-    logs_folder          = Defaults.LOGS_FOLDER
-    log_scale            = Defaults.LOG_SCALE
-    executable           = Defaults.EXECUTABLE
-    thread_level         = Defaults.THREAD_LEVEL
-    scatter              = Defaults.SCATTER
-    max_n_points         = Defaults.MAX_N_POINTS
-    log                  = Defaults.LOG
-    bench: str           = Defaults.BENCH
-    bench_variant: str   = ""
-    tigon_query: str = "rmw"
-    tigon_protocol: str = "TwoPL"
-    tigon_partitions: int | None = None
-    tigon_partition_ratio: str | None = None
-    tigon_warmup_seconds: int | None = None
-    tigon_read_write_ratio: int = 80
-    tigon_read_only_ratio: int = 0
-    tigon_cross_ratio: int = 0
-    tigon_cross_partitions: int = 2
-    tigon_keys: int = 200000
-    tigon_zipf: float = 0.0
-    tigon_neworder_dist: int = 10
-    tigon_payment_dist: int = 15
-    iter: bool
-    rusage: bool
-    experiment_name: str = ""
-    figs_folder: str = "./data/figs"
-    run_dir: str | None = None   # folder holding config.toml/run.json
-    placement: str = "none"   # none | process | locks (see scripts/config.py)
-    hardware_cxl: bool = False  # placement == "locks": -Dhardware_cxl build
-    build_dir: str = "build"    # build-hardware_cxl when hardware_cxl (scripts/builder.py)
-    skip_build: bool = False    # reuse build_dir as is (verified before running)
-    numa_node: int | None = None
-    skip_plotting: bool
-    show: bool = False
-    averages: bool
-    iter_variable_name: str
-    stdev_scale: float
-
-    noncritical_delay: int
-    groups: int
-    critical_delay: int
-
-    low_contention = Defaults.LOW_CONTENTION
-    stagger_ms     = Defaults.STAGGER_MS
-    skip_experiment: bool = False
-    iter_range: list[int]
-    faceted = None  # None = auto, True = force faceted, False = force combined
-    variability: bool = False
-    speedup: bool = False
-    speedup_ref: str = 'exp_spin'
-    heatmap_ref: str | None = None
-    no_heatmap: bool = False
-    capture: str = "latency"
-    plot: str = "auto"

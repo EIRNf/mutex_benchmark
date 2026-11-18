@@ -32,8 +32,9 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd  # pyright: ignore[reportMissingModuleSource]
 
-from .config import CONFIG_FILE, ConfigError, ExperimentConfig, RunPaths, apply_to_constants, load_config
+from .config import CONFIG_FILE, ConfigError, ExperimentConfig, RunPaths, load_config
 from .rundir import read_json, read_record
+from .settings import resolve_run
 from .suite import SUITE_RECORD, run_matches
 
 BY_CHOICES = ("environment", "experiment")
@@ -85,12 +86,12 @@ def load_throughput(run_dir: str, cfg: ExperimentConfig) -> pd.DataFrame:
 
     Points that were never written (hung or still pending) are simply absent.
     """
-    from .dataloader import load_data_iter  # reads the run selected on Constants
+    from .dataloader import load_data_iter
 
-    apply_to_constants(cfg, RunPaths.for_existing_run(run_dir))
+    run = resolve_run(cfg, RunPaths.for_existing_run(run_dir))
     var = cfg.sweep.var
     frames = []
-    for lock, df in load_data_iter():
+    for lock, df in load_data_iter(run):
         totals = df.groupby([var, "run"], as_index=False)["# Iterations"].sum()
         frames.append(pd.DataFrame({
             "lock": lock,
