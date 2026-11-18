@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.config import ConfigError, load_config
+from scripts.config import ConfigError, load_config, resolve_lock_names
 from scripts.rundir import SUITE_CONTEXT_ENV
 from scripts.suite import (
     SuiteOptions,
@@ -147,6 +147,12 @@ class ExpansionTests(unittest.TestCase):
         self.assertEqual((base.key, base.cfg.bench, base.cfg.seconds, base.cfg.repetitions), ("base", "min", 3.0, 2))
         self.assertEqual((longer.key, longer.cfg.seconds), ("longer", 30.0))
 
+    def test_experiments_can_be_limited_to_some_environments(self):
+        s = suite(SUITE.replace('[[experiments]]\nbench = "min"',
+                                '[[experiments]]\nbench = "min"\nenvironments = ["far"]'))
+        self.assertEqual([run.key for run in s.runs], ["near/max", "far/max", "far/min"])
+        self.assertTrue(describe_suite(s).startswith("Suite demo: 3 runs\n"))
+
     def test_mistakes_are_reported_with_their_location(self):
         cases = [
             ('bench = "max"\n[[experiments]]\n', "`bench` is an experiment setting"),
@@ -163,11 +169,47 @@ class ExpansionTests(unittest.TestCase):
             ('[[experiments]]\nvary = { "sweep.stopp" = [1, 2] }\n', "did you mean `sweep.stop`"),
             ('[[experiments]]\nbench = "grouped"\n', "run grouped: `workload.groups` must be set"),
             ("name = \"a b\"\n[[experiments]]\n", "`name` must start with a letter or digit"),
+            ('[[experiments]]\nenvironments = ["x"]\n', "needs \\[\\[environments\\]\\] to choose from"),
+            ('[[environments]]\nname = "a"\n[[experiments]]\nenvironments = ["b"]\n',
+             "names 'b', which is not an environment; choose from a"),
+            ('cgroup = "a/cgroup.procs"\n[[experiments]]\n', "`cgroup` must be the absolute path"),
         ]
         for text, pattern in cases:
             with self.subTest(pattern=pattern):
                 with self.assertRaisesRegex(ConfigError, pattern):
                     suite(text)
+
+
+class ShippedSuiteTests(unittest.TestCase):
+    """The suites that replaced start.sh and scripts/run_baseline.sh."""
+
+    def test_matrix_runs_tigon_then_native_in_each_environment(self):
+        s = load_suite(str(ROOT / "experiments" / "suites" / "matrix.toml"))
+        self.assertEqual(s.cgroup, "/sys/fs/cgroup/a/cgroup.procs")
+        self.assertEqual([run.key for run in s.runs[:8]], [
+            "dram/tigon_ycsb-partition_ratio-threads", "dram/tigon_ycsb-partition_ratio-half",
+            "dram/tigon_ycsb-partition_ratio-quarter", "dram/tigon_tpcc-partition_ratio-threads",
+            "dram/tigon_tpcc-partition_ratio-half", "dram/tigon_tpcc-partition_ratio-quarter",
+            "dram/max", "dram/min",
+        ])
+        self.assertEqual(sum(executions(run.cfg) for run in s.runs), 1144)  # as start.sh --list-runs
+
+    def test_one_lock_set_override_replaces_native_and_tigon_locks(self):
+        path = str(ROOT / "experiments" / "suites" / "matrix.toml")
+        s = load_suite(path, ["locks.sets=hardware_cxl"])
+        expected = ["spin", "exp_spin", "cxl_fast_exp", "ticket", "mcs_local"]
+        self.assertTrue(all(resolve_lock_names(run.cfg.locks) == expected for run in s.runs))
+        with self.assertRaisesRegex(ConfigError, "unknown lock set 'not_a_real_set'"):
+            load_suite(path, ["locks.sets=not_a_real_set"])
+
+    def test_baseline_runs_grouped_on_cxl_only(self):
+        s = load_suite(str(ROOT / "experiments" / "suites" / "baseline.toml"))
+        self.assertEqual([run.key for run in s.runs], [
+            "dram/tigon_ycsb", "dram/max", "dram/min",
+            "cxl/tigon_ycsb", "cxl/max", "cxl/min", "cxl/grouped",
+        ])
+        grouped = s.runs[-1].cfg
+        self.assertEqual((grouped.workload.groups, grouped.sweep.start, grouped.sweep.step), (2, 2, 2))
 
 
 class PlanTests(unittest.TestCase):
@@ -334,6 +376,29 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(record["status"], "interrupted")
         self.assertEqual({run["key"]: run["status"] for run in record["runs"]},
                          {"host/max": "complete", "slow/max": "interrupted", "fast/max": "pending"})
+
+    def test_cgroup_is_joined_before_building_and_recorded(self):
+        events = []
+        with tempfile.NamedTemporaryFile() as procs:
+            s = suite(f'cgroup = "{procs.name}"\n' + SUITE)
+            runner = SuiteRunner(s, self.suite_dir, child=FakeChild(), out=io.StringIO(),
+                                 cgroup_writer=lambda path, pid: events.append(("cgroup", path, pid)))
+            runner.create()
+            with patch("scripts.suite.build", lambda *a, **k: events.append(("build",))):
+                self.assertEqual(runner.run(), 0)
+            self.assertEqual(events[0], ("cgroup", procs.name, str(os.getpid())))
+            self.assertEqual(events[1][0], "build")
+            self.assertEqual(self.record()["sessions"][0]["cgroup_joined"], procs.name)
+            self.assertEqual(suite_from_record(self.suite_dir).cgroup, procs.name)
+
+    def test_missing_cgroup_stops_the_suite_before_anything_runs(self):
+        child = FakeChild()
+        s = suite('cgroup = "/nonexistent/cgroup.procs"\n' + SUITE)
+        with patch("scripts.suite.build") as build, \
+                self.assertRaisesRegex(ConfigError, "cgroup file /nonexistent/cgroup.procs does not exist"):
+            self.runner(s, child).run()
+        build.assert_not_called()
+        self.assertEqual(child.calls, [])
 
     def test_a_suite_folder_is_never_reused(self):
         with patch("scripts.suite.build"):

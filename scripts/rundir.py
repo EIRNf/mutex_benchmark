@@ -145,6 +145,8 @@ class RunRecord:
         }
         if self._cfg.is_tigon:
             self.data["tigon_submodule"] = git_info("apps/tigon_db_bench/tigon")
+            # Tigon's allocator backend; null means unset, which Tigon treats as "mmap".
+            self.data["cxlalloc_backend"] = os.environ.get("CXLALLOC_BACKEND") or None
         suite = _suite_context()
         if suite is not None:
             self.data["suite"] = suite

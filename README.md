@@ -36,7 +36,7 @@ Each run gets its own folder, `data/runs/<timestamp>-<name>/` (or `--dir DIR`):
 | Path | Contents |
 |---|---|
 | `config.toml` | the fully resolved config; `python -m scripts run <it>` repeats the experiment |
-| `run.json` | status (`running`, `complete`, `failed`, `interrupted`), timing, command, git commit and dirty flag, host and `numactl --hardware`, resolved lock list, build flags, and how many data points were written (missing ones are listed) |
+| `run.json` | status (`running`, `complete`, `failed`, `interrupted`), timing, command, git commit and dirty flag, host and `numactl --hardware`, resolved lock list, build flags, and how many data points were written (missing ones are listed); Tigon runs add the submodule commit and `CXLALLOC_BACKEND` (`null` = unset, which Tigon treats as `mmap`) |
 | `raw/` | CSVs |
 | `plots/` | figures and speedup tables |
 | `logs/` | debug logs |
@@ -104,7 +104,8 @@ python3 -m scripts suite --resume data/suites/<suite-folder>
 ```
 
 ```toml
-name = "placement"                  # default: the file name
+name   = "placement"                # default: the file name
+cgroup = "/sys/fs/cgroup/a/cgroup.procs"   # optional: join this cgroup before building
 
 [defaults]                          # same keys as an experiment file
 capture = "throughput"
@@ -130,18 +131,23 @@ bench = "max"                       # named after the bench unless `name` is set
 [[experiments]]
 file = "../tigon_ycsb.toml"         # start from an experiment file
 vary = { "tigon.partition_ratio" = ["threads", "half", "quarter"] }  # one experiment per value
+environments = ["cxl-slow"]         # optional: run only in these environments
 ```
 
 A run's settings are layered: `[defaults]`, then the experiment's `file`, its
 own keys, its `vary` value, the environment's `memory`, and last the `-o`
-overrides, which apply to every run. Every run is validated before anything
-starts.
+overrides. Overrides apply to every run in the suite, even with `--only`, and
+every run is validated before anything starts, so a setting that only some
+runs accept (such as `tigon.zipf`, YCSB only) belongs in the suite file.
 
 The suite folder, `data/suites/<timestamp>-<name>/` (or `--dir`), holds
 `suite.toml` (the file as given), `suite.json` (the plan, each run's status,
 and each session), and one run folder per run at `<environment>/<experiment>/`.
 The runner:
 
+- joins the suite's `cgroup`, if set (writing its PID to `cgroup.procs` with
+  `sudo`), so builds and benchmarks run inside it; a missing cgroup stops the
+  suite before anything runs;
 - builds each needed build folder once, before the first run (`--no-build`
   reuses them; each run still checks its build);
 - runs each experiment as its own `python -m scripts run` process, so a failed
@@ -336,105 +342,39 @@ available) `comparison.png`. Use `--cxl-node N` to add NUMA membind placement,
 or `--smoke-only` / `--compare-only` to run a single phase.
 Each invocation stores those artifacts below a timestamped run directory.
 
-**DRAM baseline for Tigon, max, and min benchmarks:**
+**DRAM and CXL baselines (`experiments/suites/baseline.toml`):**
 ```bash
-scripts/run_baseline.sh \
-  --memory dram \
-  --node 0 \
-  --threads 8 \
-  --seconds 30 \
-  --repetitions 3
+python3 -m scripts suite experiments/suites/baseline.toml --list
+python3 -m scripts suite experiments/suites/baseline.toml --only dram -o sweep.stop=8 -o seconds=30
+python3 -m scripts suite experiments/suites/baseline.toml --only cxl -o sweep.start=4 -o sweep.step=4
 ```
-This binds all processes to the selected NUMA node, runs the `paper` lock set,
-and writes separate CSVs and faceted plots under `data/dram_baseline/`.
-For a quick Tigon-only run, add `--tigon-only --threads 4 --seconds 5`.
-Each invocation creates a timestamped run directory below
-`data/dram_baseline/`; its raw CSVs and figures stay associated with that run.
-Use `--skip 4` to sample 4, 8, ..., 64 threads instead of every thread count.
+Tigon YCSB, max and min on the DRAM node and on the CXL node, plus grouped
+(2 groups) on CXL, with the `paper` lock set, 3 repetitions and a 1-64 thread
+sweep. Every benchmark runs under `numactl --membind` (`placement =
+"process"`), so Tigon's allocations land on the node through its default
+`mmap` allocator backend (the bundled archive does not support the native
+`cxl` backend). This suite replaces `scripts/run_baseline.sh` and its
+`run_dram_baseline.sh` / `run_cxl_baseline.sh` wrappers; the comment at the
+top of the file maps each old option.
 
-**CXL NUMA baseline for all applications:**
+**DRAM vs CXL matrix (`experiments/suites/matrix.toml`):**
 ```bash
-scripts/run_baseline.sh \
-  --memory cxl \
-  --node 1 \
-  --threads 8 \
-  --seconds 30 \
-  --repetitions 3
+python3 -m scripts suite experiments/suites/matrix.toml --list
+python3 -m scripts suite experiments/suites/matrix.toml -o sweep.stop=64
+python3 -m scripts suite experiments/suites/matrix.toml -o locks.sets=champions   # native and Tigon
 ```
-This runs Tigon YCSB, max-contention, min-contention, and grouped-contention
-under the selected CXL NUMA node. Tigon uses `CXLALLOC_BACKEND=mmap` so the
-NUMA policy places its allocations on CXL memory; the native `cxl` allocator
-backend is not used because the bundled archive does not support it.
-Each invocation writes its raw CSVs and figures below a timestamped directory
-under `data/cxl_baseline/`.
-Use `--skip 4` for a faster 4, 8, ..., 64-thread sweep.
-
-The legacy `run_dram_baseline.sh` and `run_cxl_baseline.sh` commands remain
-as compatibility wrappers around this unified runner.
-
-**Master benchmark matrix (`start.sh`):**
-```bash
-THREAD_START=1 MAX_THREADS=64 THREAD_INTERVAL=4 \
-RUN_TIME=10 RUNS=1 \
-./start.sh
-```
-Without `CXL_LATENCY_PCI`, the script runs CXL at the host's current latency
-setting and does not access or modify PCI configuration. To additionally test
-both adjusted latency values, provide the verified PCI BDF:
-```bash
-export CXL_LATENCY_PCI=<verified-cxl-latency-control-bdf>
-THREAD_START=1 MAX_THREADS=64 THREAD_INTERVAL=4 RUN_TIME=10 RUNS=1 ./start.sh
-```
-The script runs max/min on the DRAM node and the selected CXL mode(s); it also
-runs Tigon YCSB and TPC-C for each mode. For each Tigon workload it compares
-partitions equal to the swept thread count N, `max(1, floor(N/2))`, and
-`max(1, floor(N/4))`. The defaults are the existing YCSB RMW and TPC-C mixed
-workloads with TwoPL.
-All runs use `numactl --membind` on the selected node around the whole Python
-process (equivalent to `placement = "process"`); Tigon uses
-`CXLALLOC_BACKEND=mmap`, not `placement = "locks"`.
-
-Run settings are environment-overridable variables at the top of `start.sh`,
-including `THREAD_START`, `MAX_THREADS`, `THREAD_INTERVAL`, `RUN_TIME`,
-`RUNS`, `DRAM_NODE`, `CXL_NODE`, `LOCK_SET`, and `TIGON_LOCKS`. Set
-`RUN_NATIVE=0`, `RUN_TIGON=0`, `RUN_DRAM=0`, `RUN_CXL_UNMODIFIED=0`,
-`RUN_CXL_LOW=0`, or `RUN_CXL_HIGH=0` to omit a suite or mode. With no
-`CXL_LATENCY_PCI`, the unmodified CXL mode is enabled by default and the
-adjusted modes are disabled. Supplying the BDF enables the two adjusted modes
-by default; the `RUN_CXL_*` variables can override these defaults. Tigon
-query, protocol, key count, ratios, and `TIGON_PARTITION_MODES` can also be
-overridden.
-Pass `--lock-set NAME` to select one of the named sets in
-`scripts/constants.py` for both native and Tigon runs; for example:
-```bash
-./start.sh --lock-set champions
-./start.sh --list-runs --lock-set hardware_cxl
-```
-This option overrides both `LOCK_SET` and `TIGON_LOCKS`. Without it, native
-runs use `LOCK_SET` and Tigon uses its default `exp_spin,ticket,mcs,cxl_fast_exp`
-list (which passed the two-instance preload probe), or the comma-separated
-`TIGON_LOCKS` override.
-
-Each benchmark invocation gets a separate timestamped directory under
-`data/master_runs/<application>/<memory-mode>/...`, containing raw CSVs,
-figures, logs, and `run_config.txt`. `DRY_RUN=1 ./start.sh` prints the planned
-commands and creates the run manifests without launching benchmarks or
-writing PCI configuration. To list the entire configured matrix and get a
-count and timed-workload duration estimate without creating directories or
-checking runtime NUMA/PCI prerequisites, use:
-```bash
-THREAD_START=1 MAX_THREADS=64 THREAD_INTERVAL=4 RUN_TIME=10 RUNS=1 \
-./start.sh --list-runs
-```
-The listing shows each timestamped output group, its lock/thread/repetition
-matrix, Tigon workload and effective partition counts, plus the total number
-of benchmark process launches. The duration estimate includes `RUN_TIME` for
-each launch and Tigon warmup, but excludes build, startup, plotting, and other
-overhead. When adjusted CXL modes are enabled, the script
-requires `CXL_LATENCY_PCI`, reads and saves the original register, verifies
-each write, and restores the original value on exit. The register write
-changes platform PCI configuration; confirm the BDF and offset for the host
-before enabling those modes.
+Tigon YCSB (RMW) and TPC-C (mixed) with TwoPL, each with partitions equal to
+the swept thread count N, `max(1, N/2)` and `max(1, N/4)`, then max and min,
+in a DRAM and a CXL environment. Tigon uses the `tigon` lock set
+(`exp_spin`, `ticket`, `mcs`, `cxl_fast_exp`, which passed the two-instance
+preload probe) and the native benchmarks the `paper` set. The suite joins the
+cgroup of `/sys/fs/cgroup/a/cgroup.procs` before building; remove the
+`cgroup` line on hosts without it. To also test adjusted CXL latencies, set
+this host's CXL device in `[latency_control]` and uncomment the `cxl-low` /
+`cxl-high` environments. Check the PCI address and register for the host
+first: the write changes platform PCI configuration. This suite replaces
+`start.sh`; the comment at the top of the file maps each old variable and
+option.
 
 **Lock-level latency CDF (no sweep):**
 ```bash

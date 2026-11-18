@@ -34,7 +34,7 @@ memory = { placement = "locks", node = 1 }
 # back when the suite ends, however it ends.
 #
 # [latency_control]
-# pci      = "0000:a0:00.0"   # this host's CXL device; verify before use
+# pci      = "<this host's CXL device, e.g. 0000:a0:00.0>"   # verify before use
 # register = "0xe08.l"
 #
 # [[environments]]

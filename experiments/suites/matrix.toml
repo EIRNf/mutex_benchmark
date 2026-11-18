@@ -1,0 +1,83 @@
+# The DRAM-vs-CXL benchmark matrix (formerly start.sh): Tigon YCSB and TPC-C
+# at three partition ratios, then the max and min contention benchmarks, each
+# with all of its memory on DRAM and on CXL.
+#
+#   python -m scripts suite experiments/suites/matrix.toml --list
+#   python -m scripts suite experiments/suites/matrix.toml
+#   python -m scripts suite --resume data/suites/<timestamp>-matrix
+#
+# start.sh settings, and what to use instead:
+#   RUN_TIME=20 RUNS=3                      -o seconds=20 -o repetitions=3
+#   THREAD_START=4 MAX_THREADS=64           -o sweep.start=4 -o sweep.stop=64
+#   THREAD_INTERVAL=8                       -o sweep.step=8
+#   --lock-set champions                    -o locks.sets=champions   (native and Tigon)
+#   TIGON_LOCKS=mcs,ticket                  -o locks.sets= -o locks.include=mcs,ticket  (all runs)
+#   TIGON_PARTITION_MODES=threads           --only 'tigon_*-threads'
+#   RUN_TIGON=0 / RUN_NATIVE=0              --only max --only min / --only 'tigon_*'
+#   RUN_DRAM=0 / RUN_CXL_UNMODIFIED=0       --only cxl / --only dram
+#   SKIP_BUILD=1                            --no-build
+#   --list-runs / DRY_RUN=1                 --list
+#   DRAM_NODE / CXL_NODE / CGROUP_PROCS     edit this file
+#   CXL_LATENCY_PCI=...                     set [latency_control] below and uncomment
+#                                           the cxl-low / cxl-high environments
+#
+# Every benchmark runs under `numactl --membind=<node>` (placement = process),
+# as start.sh did by binding the whole driver. Tigon's allocator backend
+# defaults to mmap (start.sh set CXLALLOC_BACKEND=mmap); each Tigon run's
+# run.json records the variable.
+
+# Run builds and benchmarks in this cgroup (start.sh's CGROUP_PROCS). The suite
+# stops if it does not exist; remove the line on hosts without it.
+cgroup = "/sys/fs/cgroup/a/cgroup.procs"
+
+[defaults]
+capture     = "throughput"
+seconds     = 10
+repetitions = 1
+locks       = { sets = ["paper"] }
+sweep       = { var = "threads", start = 1, stop = 42, step = 4 }
+plot        = { layout = "faceted" }
+
+[[environments]]
+name   = "dram"
+memory = { placement = "process", node = 0 }
+
+[[environments]]
+name   = "cxl"
+memory = { placement = "process", node = 1 }
+
+# Adjusted CXL latency. start.sh ran these instead of `cxl` when given a PCI
+# address; keep `cxl` too if you want the host's own setting as well. setpci
+# runs under sudo, and the original value is restored when the suite ends.
+#
+# [latency_control]
+# pci      = "<this host's CXL device, e.g. 0000:a0:00.0>"   # verify before use
+# register = "0xe08.l"
+#
+# [[environments]]
+# name    = "cxl-low"
+# memory  = { placement = "process", node = 1 }
+# latency = "0020"
+#
+# [[environments]]
+# name    = "cxl-high"
+# memory  = { placement = "process", node = 1 }
+# latency = "ffff"
+
+[[experiments]]
+bench = "tigon_ycsb"
+locks = { sets = ["tigon"] }
+tigon = { query = "rmw", protocol = "TwoPL", read_write_ratio = 80, read_only_ratio = 0, cross_ratio = 0, cross_partitions = 2, keys = 200000, zipf = 0.0 }
+vary  = { "tigon.partition_ratio" = ["threads", "half", "quarter"] }
+
+[[experiments]]
+bench = "tigon_tpcc"
+locks = { sets = ["tigon"] }
+tigon = { query = "mixed", protocol = "TwoPL", neworder_dist = 10, payment_dist = 15 }
+vary  = { "tigon.partition_ratio" = ["threads", "half", "quarter"] }
+
+[[experiments]]
+bench = "max"
+
+[[experiments]]
+bench = "min"

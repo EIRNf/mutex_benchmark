@@ -4,6 +4,7 @@ A suite file (TOML) lists experiments and, optionally, the environments to
 run each of them in:
 
     name = "placement"                 # default: the file name
+    cgroup = "/sys/fs/cgroup/a/cgroup.procs"   # optional: run everything in this cgroup
 
     [defaults]                         # shared settings; same keys as an experiment file
     capture = "throughput"
@@ -24,6 +25,7 @@ run each of them in:
     [[experiments]]
     file = "../tigon_ycsb.toml"        # start from an experiment file, relative to this one
     vary = { "tigon.partition_ratio" = ["threads", "half", "quarter"] }
+    environments = ["cxl-high"]        # optional: run only in these environments
 
 Each run's settings are layered: defaults < file < the entry's own keys <
 vary < the environment's memory < command-line overrides. ``vary`` expands
@@ -84,7 +86,7 @@ SUITE_FILE = "suite.toml"
 SUITE_RECORD = "suite.json"
 DEFAULT_LATENCY_REGISTER = "0xe08.l"
 
-_SUITE_KEYS = ("name", "defaults", "environments", "experiments", "latency_control")
+_SUITE_KEYS = ("name", "cgroup", "defaults", "environments", "experiments", "latency_control")
 _ENVIRONMENT_KEYS = ("name", "memory", "latency")
 _LATENCY_CONTROL_KEYS = ("pci", "register")
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+=-]*$")
@@ -131,6 +133,7 @@ class Suite:
     latency_control: LatencyControlSpec | None = None
     overrides: list[str] = field(default_factory=list)
     source_text: str = ""
+    cgroup: str | None = None     # cgroup.procs file the suite joins before building
 
     def environment(self, name: str | None) -> Environment | None:
         return next((env for env in self.environments if env.name == name), None)
@@ -251,12 +254,27 @@ def _label(value) -> str:
     return re.sub(r"[^A-Za-z0-9._+=-]", "_", text)
 
 
-def _expand_experiment(index: int, raw, defaults: dict, base_dir: str):
-    """One [[experiments]] entry -> [(name, raw config data, sets memory)]."""
+def _expand_experiment(index: int, raw, defaults: dict, base_dir: str, environment_names):
+    """One [[experiments]] entry -> [(name, raw config data, sets memory, environments)].
+
+    environments is the entry's `environments` filter, or None for all.
+    """
     where = f"experiments[{index}]"
     entry = copy.deepcopy(_table(raw, where))
     file_ref = entry.pop("file", None)
     vary = entry.pop("vary", None)
+    only_in = entry.pop("environments", None)
+    if only_in is not None:
+        if not environment_names:
+            raise ConfigError(f"`{where}.environments` needs [[environments]] to choose from")
+        if not isinstance(only_in, list) or not only_in or not all(isinstance(n, str) for n in only_in):
+            raise ConfigError(f"`{where}.environments` must be a non-empty list of environment names")
+        for env_name in only_in:
+            if env_name not in environment_names:
+                raise ConfigError(
+                    f"`{where}.environments` names {env_name!r}, which is not an environment; "
+                    f"choose from {', '.join(environment_names)}"
+                )
 
     own, file_stem = {}, None
     if file_ref is not None:
@@ -291,7 +309,7 @@ def _expand_experiment(index: int, raw, defaults: dict, base_dir: str):
             except ConfigError as exc:
                 raise ConfigError(f"`{where}.vary`: {exc}") from None
             parts.append(f"{key.rsplit('.', 1)[-1]}-{_label(value)}")
-        expanded.append(("-".join(parts), run_data, sets_memory))
+        expanded.append(("-".join(parts), run_data, sets_memory, only_in))
     return expanded
 
 
@@ -305,6 +323,9 @@ def suite_from_data(data: dict, overrides=(), *, base_dir: str = ".", default_na
             )
     _check_keys(data, _SUITE_KEYS, "")
     name = _check_name(data.get("name", default_name), "name")
+    cgroup = data.get("cgroup")
+    if cgroup is not None and (not isinstance(cgroup, str) or not os.path.isabs(cgroup)):
+        raise ConfigError(f"`cgroup` must be the absolute path of a cgroup.procs file; got {cgroup!r}")
     defaults = copy.deepcopy(_table(data.get("defaults", {}), "defaults"))
     if "name" in defaults:
         raise ConfigError("`defaults.name` is not allowed; each experiment is named separately")
@@ -321,14 +342,17 @@ def suite_from_data(data: dict, overrides=(), *, base_dir: str = ".", default_na
     raw_experiments = data.get("experiments")
     if not isinstance(raw_experiments, list) or not raw_experiments:
         raise ConfigError("a suite needs at least one [[experiments]] entry")
+    environment_names = [env.name for env in environments]
     experiments = []
     for index, raw in enumerate(raw_experiments):
-        experiments.extend(_expand_experiment(index, raw, defaults, base_dir))
-    _check_unique([exp_name for exp_name, _, _ in experiments], "experiment")
+        experiments.extend(_expand_experiment(index, raw, defaults, base_dir, environment_names))
+    _check_unique([exp_name for exp_name, _, _, _ in experiments], "experiment")
 
     runs = []
     for env in environments or [None]:
-        for exp_name, exp_data, sets_memory in experiments:
+        for exp_name, exp_data, sets_memory, only_in in experiments:
+            if only_in is not None and env.name not in only_in:
+                continue
             key = f"{env.name}/{exp_name}" if env else exp_name
             run_data = copy.deepcopy(exp_data)
             if env is not None and env.memory is not None:
@@ -344,7 +368,7 @@ def suite_from_data(data: dict, overrides=(), *, base_dir: str = ".", default_na
             except ConfigError as exc:
                 raise ConfigError(f"run {key}: {exc}") from None
             runs.append(PlannedRun(key, exp_name, env.name if env else None, cfg))
-    return Suite(name, runs, environments, latency_control, list(overrides), source_text)
+    return Suite(name, runs, environments, latency_control, list(overrides), source_text, cgroup)
 
 
 def load_suite(path: str, overrides=()) -> Suite:
@@ -395,6 +419,7 @@ def suite_from_record(suite_dir: str) -> Suite:
         record["name"], runs, environments,
         LatencyControlSpec(control["pci"], control["register"]) if control else None,
         record.get("overrides", []),
+        cgroup=record.get("cgroup"),
     )
 
 
@@ -460,8 +485,12 @@ def _environment_text(suite: Suite, env: Environment) -> str:
 
 def describe_suite(suite: Suite, statuses: dict[str, str] | None = None) -> str:
     lines = [f"Suite {suite.name}: {len(suite.runs)} runs"]
+    experiments = len({run.experiment for run in suite.runs})
+    if suite.environments and len(suite.runs) == len(suite.environments) * experiments:
+        lines[0] += f" ({len(suite.environments)} environments x {experiments} experiments)"
+    if suite.cgroup:
+        lines.append(f"Runs in the cgroup of {suite.cgroup}")
     if suite.environments:
-        lines[0] += f" ({len(suite.environments)} environments x {len(suite.runs) // len(suite.environments)} experiments)"
         lines += ["", "Environments:"]
         width = max(len(env.name) for env in suite.environments)
         lines += [f"  {env.name:<{width}}  {_environment_text(suite, env)}" for env in suite.environments]
@@ -513,6 +542,18 @@ def _run_setpci(command: list[str]) -> str:
     if result.returncode != 0:
         raise RuntimeError(f"`{' '.join(command)}` failed: {result.stderr.strip() or result.returncode}")
     return result.stdout
+
+
+def write_cgroup(path: str, pid: str):
+    """Move a process into a cgroup by writing its PID to cgroup.procs (via sudo)."""
+    if os.geteuid() == 0:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(pid + "\n")
+        return
+    result = subprocess.run(["sudo", "tee", path], input=pid + "\n", stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE, text=True, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"could not join the cgroup of {path}: {result.stderr.strip()}")
 
 
 class LatencyControl:
@@ -602,8 +643,9 @@ class SuiteOptions:
 
 class SuiteRunner:
     def __init__(self, suite: Suite, suite_dir: str, options: SuiteOptions | None = None, *,
-                 child=run_child, setpci=None, out=None):
+                 child=run_child, setpci=None, cgroup_writer=None, out=None):
         self.suite = suite
+        self._cgroup_writer = cgroup_writer or write_cgroup
         self.suite_dir = suite_dir
         self.options = options or SuiteOptions()
         self._child = child
@@ -643,6 +685,7 @@ class SuiteRunner:
             "created_utc": utc_now(),
             "source": source,
             "overrides": self.suite.overrides,
+            "cgroup": self.suite.cgroup,
             "latency_control": {"pci": control.pci, "register": control.register} if control else None,
             "environments": [
                 {"name": env.name, "memory": env.memory, "latency": env.latency}
@@ -683,6 +726,11 @@ class SuiteRunner:
         return chosen
 
     def _check_host(self, pending: list[PlannedRun]):
+        if self.suite.cgroup and not os.path.exists(self.suite.cgroup):
+            raise ConfigError(
+                f"cgroup file {self.suite.cgroup} does not exist; create the cgroup "
+                "or remove `cgroup` from the suite"
+            )
         checked = set()
         for run in pending:
             placement = (run.cfg.memory.placement, run.cfg.memory.node)
@@ -720,6 +768,10 @@ class SuiteRunner:
         status = "failed"
         previous_handler = signal.signal(signal.SIGTERM, _raise_terminated)
         try:
+            if self.suite.cgroup:
+                self._join_cgroup(self.suite.cgroup)
+                session["cgroup_joined"] = self.suite.cgroup
+                self._print(f"==> Joined the cgroup of {self.suite.cgroup}; builds and runs inherit it")
             self._build(pending, session)
             if self._needs_latency(pending):
                 latency = LatencyControl(self.suite.latency_control, self._setpci)
@@ -747,6 +799,9 @@ class SuiteRunner:
             self._print_summary(selected)
         failed = [run for run in selected if self.status(run) != "complete"]
         return 1 if failed else 0
+
+    def _join_cgroup(self, path: str):
+        self._cgroup_writer(path, str(os.getpid()))
 
     def _build(self, pending: list[PlannedRun], session: dict):
         session["builds"] = []
@@ -796,6 +851,7 @@ class SuiteRunner:
             "--dir", folder, "--build-dir", run.build_dir, "--no-build",
         ]
         context = {"name": self.suite.name, "dir": self.suite_dir, "run": run.key,
+                   "cgroup": self.suite.cgroup,
                    "environment": self._environment_context(env, latency)}
         child_env = {**os.environ, SUITE_CONTEXT_ENV: json.dumps(context)}
         code = None

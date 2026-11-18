@@ -291,6 +291,14 @@ class Constants:
 
         COMBINED_CXL_SET = SOFTWARE_CXL_SET + HARDWARE_CXL_SET
 
+        # Locks injected into Tigon by default (via the LD_PRELOAD shim).
+        TIGON_SET = [
+            "exp_spin",
+            "ticket",
+            "mcs",
+            "cxl_fast_exp",
+        ]
+
         MUTEX_SETS = {
             "champions": CHAMPIONS_SET,   # new designs vs best-of-each-series
             "network": NETWORK_SET,
@@ -303,6 +311,7 @@ class Constants:
             "software_cxl": SOFTWARE_CXL_SET,
             "hardware_cxl": HARDWARE_CXL_SET,
             "combined_cxl": COMBINED_CXL_SET,
+            "tigon": TIGON_SET,
         }
 
         # Default lock list when no -s/-i selection is given.

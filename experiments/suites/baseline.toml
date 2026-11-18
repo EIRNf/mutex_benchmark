@@ -1,0 +1,57 @@
+# NUMA baseline (formerly scripts/run_baseline.sh with its run_cxl_baseline.sh
+# and run_dram_baseline.sh wrappers): Tigon YCSB, max, min and grouped with
+# all of their memory on DRAM or on CXL.
+#
+#   python -m scripts suite experiments/suites/baseline.toml --list
+#   python -m scripts suite experiments/suites/baseline.toml --only cxl    # run_cxl_baseline.sh
+#   python -m scripts suite experiments/suites/baseline.toml --only dram   # run_dram_baseline.sh
+#
+# run_baseline.sh options, and what to use instead:
+#   --memory cxl / --memory dram        --only cxl / --only dram
+#   --node N, --cxl-node, --dram-node   edit the environments below
+#   --threads 32                        -o sweep.stop=32
+#   --skip 4 (thread step)              -o sweep.start=4 -o sweep.step=4
+#   --seconds N / --repetitions N       -o seconds=N / -o repetitions=N
+#   --locks spin,mcs                    -o locks.sets= -o locks.include=spin,mcs
+#   --apps tigon_ycsb,max               --only tigon_ycsb --only max
+#   --tigon-only / --contention-only    --only tigon_ycsb / --only max --only min
+#   --groups N                          edit the grouped experiment
+#   --skip-build                        --no-build
+#   --output DIR                        --dir DIR
+# Combine an environment with an app through the run key: --only 'dram/max'.
+#
+# Every benchmark runs under `numactl --membind=<node>` (placement = process).
+# Tigon's allocator backend defaults to mmap (run_baseline.sh set
+# CXLALLOC_BACKEND=mmap); each Tigon run's run.json records the variable.
+
+[defaults]
+capture     = "throughput"
+seconds     = 10
+repetitions = 3
+locks       = { sets = ["paper"] }
+sweep       = { var = "threads", start = 1, stop = 64, step = 1 }
+plot        = { layout = "faceted" }
+
+[[environments]]
+name   = "dram"
+memory = { placement = "process", node = 0 }
+
+[[environments]]
+name   = "cxl"
+memory = { placement = "process", node = 1 }
+
+[[experiments]]
+bench = "tigon_ycsb"
+
+[[experiments]]
+bench = "max"
+
+[[experiments]]
+bench = "min"
+
+[[experiments]]
+bench        = "grouped"
+environments = ["cxl"]     # as in run_baseline.sh; drop this line to add a DRAM baseline
+workload     = { groups = 2 }
+# Thread counts must be multiples of the group count.
+sweep        = { start = 2, stop = 64, step = 2 }
