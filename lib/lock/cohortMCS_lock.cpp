@@ -56,6 +56,12 @@ private:
 
     static thread_local LocalQNode local_qnode;
 
+    // TODO(topology): the cohort is thread_id % num_nodes with num_nodes fixed at 2, not the
+    // thread's real NUMA node.
+    // The benchmark can now pin threads and knows each thread's CPU
+    // (scripts/topology.py, --cpus); map threads from that instead.
+    // Deferred until there is a multi-socket machine to test on; until
+    // then this lock is measured as a flat lock. See LOCK_PERFORMANCE_PLAN.md.
     size_t get_numa_node(size_t thread_id) const {
         return thread_id % num_nodes;
     }

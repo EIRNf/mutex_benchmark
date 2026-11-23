@@ -38,6 +38,10 @@ class PlotterTests(unittest.TestCase):
     def setUp(self):
         self.run = plotting_run()
         self.addCleanup(plt.close, "all")
+        # Every throughput run also writes a fairness figure; keep it out of the tree.
+        fairness = patch("scripts.main.fairness_for_iter_run")
+        self.fairness = fairness.start()
+        self.addCleanup(fairness.stop)
         self.data = [
             ("exp_spin", pd.DataFrame([
                 {"threads": 1, "run": 0, "# Iterations": 60},
@@ -96,6 +100,7 @@ class PlotterTests(unittest.TestCase):
             run_experiment_iter(self.run)
             line.assert_called_once_with(self.run, self.data)
             heatmap.assert_called_once_with(self.run, self.data, "exp_spin")
+            self.fairness.assert_called_once_with(self.run, self.data)
 
         run = dataclasses.replace(self.run, heatmap_ref="ticket", speedup_ref="exp_spin")
         with patch("scripts.main.load_data_iter", return_value=iter(self.data)), \

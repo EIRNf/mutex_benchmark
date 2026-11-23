@@ -111,9 +111,10 @@ def get_data_file_name(run, mutex_name, i, **iter_kwargs):
             threads = iter_kwargs.get("threads", run.bench_n_threads)
             variant = variant.replace("partitions-auto", f"partitions-{threads}", 1)
         bench_tag += variant
+    work_tag = f"-{run.work_tag}" if run.work_tag else ""
     name_root = (
         f"{run.data_folder}/"
-        f"{mutex_name}-{bench_tag}-{capture}{alloc_tag}-rep{i}"
+        f"{mutex_name}-{bench_tag}-{capture}{alloc_tag}{work_tag}-rep{i}"
     )
     for key, value in iter_kwargs.items():
         name_root += f"-{key}={value}"
@@ -136,13 +137,27 @@ def get_data_file_name(run, mutex_name, i, **iter_kwargs):
             return legacy_data_file_name
     return data_file_name
 
-def get_command(run, mutex_name, *, threads=None, csv=True, thread_level=False, critical_delay=None, noncritical_delay=None, rusage=False):
+def pinned_cpus_for(run, threads: int) -> list[int]:
+    """The CPU each thread is pinned to ([] when the run is not pinned)."""
+    if run.pin == "none":
+        return []
+    from .topology import host_cpu_order, pinned_cpus
+    return pinned_cpus(host_cpu_order(run.pin), threads)
+
+
+def get_command(run, mutex_name, *, threads=None, csv=True, thread_level=False,
+                critical_delay=None, noncritical_delay=None, critical_ns=None, noncritical_ns=None,
+                rusage=False):
     if threads is None:
         threads = run.bench_n_threads
     if critical_delay is None:
         critical_delay = run.critical_delay
     if noncritical_delay is None:
         noncritical_delay = run.noncritical_delay
+    if critical_ns is None:
+        critical_ns = run.critical_ns
+    if noncritical_ns is None:
+        noncritical_ns = run.noncritical_ns
 
     if run.bench.startswith("tigon"):
         run_sec = max(1, int(run.bench_n_seconds))
@@ -241,6 +256,15 @@ def get_command(run, mutex_name, *, threads=None, csv=True, thread_level=False, 
             cmd += ["--critical-delay", str(critical_delay)]
         if noncritical_delay != -1:
             cmd += ["--noncritical-delay", str(noncritical_delay)]
+        if critical_ns:
+            cmd += ["--critical-ns", str(critical_ns)]
+        if noncritical_ns:
+            cmd += ["--noncritical-ns", str(noncritical_ns)]
+        if run.warmup_seconds:
+            cmd += ["--warmup", f"{run.warmup_seconds:g}"]
+        cpus = pinned_cpus_for(run, threads)
+        if cpus:
+            cmd += ["--cpus", ",".join(str(cpu) for cpu in cpus)]
 
     if csv:
         cmd.append("--csv")
@@ -336,10 +360,10 @@ def _run_command_to_csv(run, command, timeout_s: float, threads: int = 1, second
 def _bench_timeout(run) -> float:
     """Return a generous per-run timeout in seconds.
 
-    Allow 10× the configured run duration (plus Tigon warmup) and a 15-second
+    Allow 10× the configured run duration (plus warmup) and a 15-second
     fixed overhead for startup and teardown.
     """
-    expected_seconds = run.bench_n_seconds
+    expected_seconds = run.bench_n_seconds + (run.warmup_seconds or 0)
     if run.bench.startswith("tigon"):
         run_sec = max(1, int(run.bench_n_seconds))
         warmup_sec = (
@@ -367,16 +391,33 @@ class _PointTally:
             )
 
 
-def _save_failure_output(run, data_file_name: str, error: BenchmarkFailed) -> str | None:
-    """Keep a failed execution's full output beside the run's logs."""
-    name = os.path.splitext(os.path.basename(data_file_name))[0] + ".failed.txt"
-    path = os.path.join(run.logs_folder, name)
+FAILED_SUFFIX = ".failed.txt"
+
+
+def failure_note_path(logs_folder: str, data_file_name: str) -> str:
+    """Where a data point's failure is described: <logs>/<csv stem>.failed.txt."""
+    stem = os.path.splitext(os.path.basename(data_file_name))[0]
+    return os.path.join(logs_folder, stem + FAILED_SUFFIX)
+
+
+def _save_failure_output(run, data_file_name: str, reason: str, details: str = "") -> str | None:
+    """Keep why a point failed beside the run's logs: the reason on line 1, then details."""
+    path = failure_note_path(run.logs_folder, data_file_name)
     try:
         with open(path, "w", encoding="utf-8") as handle:
-            handle.write(str(error) + "\n")
+            handle.write(reason + "\n")
+            if details:
+                handle.write(details + "\n")
     except OSError:
         return None
     return path
+
+
+def _failure_reason(error: BenchmarkFailed) -> str:
+    """One line: the exit status plus the benchmark's last message."""
+    if error.stderr_tail:
+        return f"{error.status}: {error.stderr_tail[-1].strip()}"
+    return error.status
 
 
 def _run_point(run, mutex_name, command, data_file_name, timeout, tally, *, threads, where):
@@ -397,10 +438,12 @@ def _run_point(run, mutex_name, command, data_file_name, timeout, tally, *, thre
             f"HANG: {mutex_name} timed out after {timeout:.0f}s "
             f"({where}) — skipping this point"
         )
-        tally.problems.append(f"{mutex_name} ({where}) timed out after {timeout:.0f}s")
+        reason = f"timed out after {timeout:.0f}s"
+        _save_failure_output(run, data_file_name, reason, f"command: {command}")
+        tally.problems.append(f"{mutex_name} ({where}) {reason}")
         return
     except BenchmarkFailed as error:
-        saved = _save_failure_output(run, data_file_name, error)
+        saved = _save_failure_output(run, data_file_name, _failure_reason(error), str(error))
         logger.warning(
             f"FAILED: {mutex_name} {error.status} ({where}) — skipping this point"
             + (f"; full output in {saved}" if saved else "")
@@ -411,6 +454,9 @@ def _run_point(run, mutex_name, command, data_file_name, timeout, tally, *, thre
         return
     with open(data_file_name, "wb") as data_file:
         data_file.write(csv_data)
+    stale_note = failure_note_path(run.logs_folder, data_file_name)
+    if os.path.exists(stale_note):
+        os.remove(stale_note)
     tally.written += 1
 
 

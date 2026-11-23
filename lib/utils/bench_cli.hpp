@@ -4,6 +4,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 // Parsed command-line arguments shared by the three benchmark apps
 // (max_/min_/grouped_contention_bench). Not every app uses every field --
@@ -19,8 +20,12 @@ struct BenchCliArgs {
     bool rusage = false;
     bool low_contention = false;
     int stagger_ms = 0;
-    int critical_delay = -1;
-    int noncritical_delay = -1;
+    int critical_delay = -1;      // legacy: busy-loop iterations, lock-level mode only
+    int noncritical_delay = -1;   // legacy: busy-loop iterations, lock-level mode only
+    double warmup_sec = 0.0;      // --warmup S: run uncounted for S seconds first
+    long long critical_ns = 0;    // --critical-ns N: fixed work inside the critical section
+    long long noncritical_ns = 0; // --noncritical-ns N: random work between acquisitions, mean N
+    std::vector<int> cpus;        // --cpus A,B,...: pin thread i to cpus[i % size] (Linux)
 };
 
 // Per-app allow-list: which optional flags this app's parser should accept.
@@ -36,6 +41,9 @@ struct BenchCliOptions {
     bool accept_low_contention = false;   // also gates --stagger-ms
     bool accept_critical_delay = false;
     bool accept_noncritical_delay = false;
+    bool accept_warmup = false;            // --warmup
+    bool accept_work_ns = false;           // --critical-ns, --noncritical-ns
+    bool accept_cpus = false;              // --cpus
 };
 
 // Parses argv[1..argc). Flags may appear anywhere among the positional

@@ -3,58 +3,40 @@
 #ifndef MAX_CONTENTION_BENCH_HPP
 #define MAX_CONTENTION_BENCH_HPP
 
-#include "bench_utils.hpp"
 #include "lock.hpp"
-#include <chrono>
-#include <atomic>
-#include <memory>
 
-struct per_thread_args {
-    int thread_id;
-    per_thread_stats stats;
-    std::shared_ptr<std::atomic<bool>> start_flag;
-    std::shared_ptr<std::atomic<bool>> end_flag;
-    SoftwareMutex* lock;
+#include <vector>
+
+// Exit status when the shared counter shows lost updates: two threads were in
+// the critical section at once.
+constexpr int kExitLostUpdates = 2;
+
+struct MaxBenchOptions {
+    int num_threads = 1;
+    double run_time_sec = 0.0;     // measured window
+    double warmup_sec = 0.0;       // uncounted run before the measured window
+    bool csv = false;
+    bool rusage = false;           // print getrusage() over the measured window instead
+    bool thread_level = false;     // count acquisitions (throughput) instead of timing each
+    bool no_output = false;
+    bool low_contention = false;   // stagger thread starts by stagger_ms
+    int stagger_ms = 0;
+
+    // Added work. All zero = the roof: a thread reacquires as soon as it releases.
+    long long critical_ns = 0;     // fixed length, inside the critical section
+    long long noncritical_ns = 0;  // uniform random in [0, 2 * mean], after unlocking
+    int legacy_critical_delay = 1;     // lock-level only: uniform [0, N) busy-loop iterations
+    int legacy_noncritical_delay = 1;  // lock-level only: uniform [0, N) busy-loop iterations
+
+    std::vector<int> cpus;         // thread i runs on cpus[i % size]; empty = not pinned
 };
 
 /**
- * @brief Run a contention benchmark.
+ * Run the max-contention benchmark on an initialized lock (then destroy it).
  *
- * @param num_threads               Number of competing threads.
- * @param run_time                  Duration to run the benchmark.
- * @param csv                       If true, output in CSV format.
- * @param thread_level              If true, measure at thread granularity.
- * @param no_output                 If true, suppress printing of per-thread stats.
- * @param max_noncritical_delay_ns  Maximum nanoseconds to sleep in the non-critical section.
- * @param low_contention            If true, stagger thread startup times.
- * @param stagger_ms                Milliseconds between each thread’s startup when low_contention is true.
- * @param lock                      Pointer to the initialized SoftwareMutex.
- * @return int                      0 on success, 1 on error (e.g. counter mismatch).
+ * @return 0 on success, kExitLostUpdates if the shared counter disagrees with
+ *         the number of completed critical sections, 1 if pinning failed.
  */
-int max_contention_bench(
-    int num_threads,
-    std::chrono::seconds run_time,
-    bool csv,
-    bool thread_level,
-    bool no_output,
-    int max_noncritical_delay_ns,
-    bool low_contention,
-    int stagger_ms,
-    SoftwareMutex* lock
-);
+int max_contention_bench(const MaxBenchOptions& options, SoftwareMutex* lock);
 
-int max_contention_bench(
-    int num_threads,
-    std::chrono::seconds run_time,
-    bool csv,
-    bool rusage,
-    bool thread_level,
-    bool no_output,
-    int max_noncritical_delay_ns,
-    bool low_contention,
-    int stagger_ms,
-    SoftwareMutex* lock
-);
-
-#endif 
-
+#endif

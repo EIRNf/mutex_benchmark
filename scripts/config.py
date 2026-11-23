@@ -40,7 +40,10 @@ from .constants import Constants
 
 BENCHES = ("max", "min", "grouped", "tigon", "tigon_ycsb", "tigon_tpcc")
 CAPTURES = ("latency", "throughput", "rusage")
-SWEEP_VARS = ("threads", "critical_delay", "noncritical_delay")
+SWEEP_VARS = ("threads", "critical_ns", "noncritical_ns", "critical_delay", "noncritical_delay")
+LEGACY_DELAYS = ("critical_delay", "noncritical_delay")   # busy-loop iterations, latency only
+PIN_MODES = ("none", "compact", "scatter")
+DEFAULT_WARMUP_SECONDS = 0.5
 PLACEMENTS = ("none", "process", "locks")
 PLOT_LAYOUTS = ("auto", "faceted", "combined", "none")
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
@@ -97,8 +100,14 @@ class Memory:
 @dataclass
 class Workload:
     groups: int | None = None             # grouped only (required there)
-    critical_delay: int | None = None     # max only
-    noncritical_delay: int | None = None  # max only
+    # max only. With no critical_ns/noncritical_ns the run is the roof: each
+    # thread reacquires the lock as soon as it releases it.
+    critical_ns: int | None = None        # fixed work inside the critical section, ns
+    noncritical_ns: int | None = None     # random work between acquisitions, mean ns (uniform 0-2x)
+    warmup: float | None = None           # seconds run before measuring; new runs default to 0.5
+    pin: str | None = None                # none | compact | scatter (Linux); new runs default to none
+    critical_delay: int | None = None     # max, capture = latency only: legacy busy-loop iterations
+    noncritical_delay: int | None = None  # max, capture = latency only: legacy busy-loop iterations
     stagger_ms: int | None = None         # max/min only
 
 
@@ -551,14 +560,7 @@ def validate(cfg: ExperimentConfig):
         _require(sweep is not None, "bench grouped requires a `sweep`")
     else:
         _require(w.groups is None, "`workload.groups` only applies to bench grouped")
-    _require(w.critical_delay is None or cfg.bench == "max",
-             "`workload.critical_delay` only applies to bench max")
-    _require(w.noncritical_delay is None or cfg.bench == "max",
-             "`workload.noncritical_delay` only applies to bench max")
-    if sweep is not None and sweep.var != "threads":
-        _require(cfg.bench == "max", f"`sweep.var = {sweep.var}` only applies to bench max")
-        _require(getattr(w, sweep.var) is None,
-                 f"set either `workload.{sweep.var}` or `sweep.var = {sweep.var}`, not both")
+    _validate_max_workload(cfg)
     if w.stagger_ms is not None:
         _require(w.stagger_ms > 0, "`workload.stagger_ms` must be > 0")
         _require(cfg.bench in ("max", "min"), "`workload.stagger_ms` only applies to bench max/min")
@@ -570,6 +572,36 @@ def validate(cfg: ExperimentConfig):
                  f"`capture = rusage` is not supported by bench {cfg.bench}")
 
     _validate_plot(cfg)
+
+
+def _validate_max_workload(cfg: ExperimentConfig):
+    w, sweep = cfg.workload, cfg.sweep
+    for name in ("critical_ns", "noncritical_ns", "warmup", "pin", *LEGACY_DELAYS):
+        _require(getattr(w, name) is None or cfg.bench == "max",
+                 f"`workload.{name}` only applies to bench max")
+    for name in ("critical_ns", "noncritical_ns"):
+        value = getattr(w, name)
+        _require(value is None or value >= 0, f"`workload.{name}` must be >= 0 (nanoseconds)")
+    for name in LEGACY_DELAYS:
+        value = getattr(w, name)
+        _require(value is None or value >= 0, f"`workload.{name}` must be >= 0")
+    _require(w.warmup is None or (math.isfinite(w.warmup) and w.warmup >= 0),
+             "`workload.warmup` must be >= 0 seconds")
+    if w.pin is not None:
+        _one_of(w.pin, PIN_MODES, "workload.pin")
+    if sweep is not None and sweep.var != "threads":
+        _require(cfg.bench == "max", f"`sweep.var = {sweep.var}` only applies to bench max")
+        _require(getattr(w, sweep.var) is None,
+                 f"set either `workload.{sweep.var}` or `sweep.var = {sweep.var}`, not both")
+        _require(sweep.start >= 0, f"`sweep.start` must be >= 0 for `sweep.var = {sweep.var}`")
+
+    swept = sweep.var if sweep is not None else None
+    for name in LEGACY_DELAYS:
+        ns_name = name.replace("_delay", "_ns")
+        legacy_set = getattr(w, name) is not None or swept == name
+        ns_set = getattr(w, ns_name) is not None or swept == ns_name
+        _require(not (legacy_set and ns_set),
+                 f"set either `workload.{ns_name}` or the legacy `workload.{name}`, not both")
 
 
 def _validate_plot(cfg: ExperimentConfig):
@@ -610,6 +642,13 @@ def _validate_plot(cfg: ExperimentConfig):
 
 def check_host(cfg: ExperimentConfig):
     """Checks that need the machine the experiment will run on."""
+    if cfg.workload.pin not in (None, "none"):
+        _require(sys.platform.startswith("linux"), "`workload.pin` requires Linux")
+        from .topology import TopologyError, host_cpus
+        try:
+            host_cpus()
+        except TopologyError as exc:
+            raise ConfigError(f"`workload.pin = {cfg.workload.pin}`: {exc}") from None
     placement = cfg.memory.placement
     if placement == "none":
         return
@@ -674,6 +713,80 @@ def to_toml(cfg: ExperimentConfig) -> str:
 # --------------------------------------------------------------------------
 # Derived values shared with scripts/settings.py and scripts/suite.py.
 # --------------------------------------------------------------------------
+
+def check_new_run(cfg: ExperimentConfig):
+    """Rules for starting a run that recorded runs may break when re-plotted.
+
+    The legacy delays (busy-loop iterations) only ever changed lock-level
+    runs; throughput and rusage runs silently ignored them, so older run
+    folders can hold such configs and still re-plot.
+    """
+    if cfg.capture == "latency":
+        return
+    swept = cfg.sweep.var if cfg.sweep is not None else None
+    for name in LEGACY_DELAYS:
+        ns_name = name.replace("_delay", "_ns")
+        _require(getattr(cfg.workload, name) is None and swept != name,
+                 f"`workload.{name}` (busy-loop iterations) only affects `capture = latency`; "
+                 f"use `workload.{ns_name}` (nanoseconds) instead")
+
+
+def with_run_defaults(cfg: ExperimentConfig) -> ExperimentConfig:
+    """The config a new run records, with max's warmup and pinning made explicit.
+
+    Run folders written before these settings existed have no such keys in
+    their config.toml; leaving them unset there keeps a re-plot from claiming
+    a warmup that never ran.
+    """
+    w = cfg.workload
+    if cfg.bench != "max" or (w.warmup is not None and w.pin is not None):
+        return cfg
+    cfg = copy.deepcopy(cfg)
+    if cfg.workload.warmup is None:
+        cfg.workload.warmup = DEFAULT_WARMUP_SECONDS
+    if cfg.workload.pin is None:
+        cfg.workload.pin = "none"
+    return cfg
+
+
+def work_tag(critical_ns=None, noncritical_ns=None, pin=None, *, swept: dict | None = None) -> str:
+    """Name fragment declaring a max run's added work and pinning ('' for the unpinned roof).
+
+    critical_ns=200, noncritical_ns=1000, pin="compact" -> "cs200ns-ncs1000ns-pin-compact".
+    swept maps a swept work variable to its (start, stop), e.g. {"critical_ns": (0, 2000)}
+    -> "cs0-2000ns".
+    """
+    swept = swept or {}
+    parts = []
+    for prefix, name, value in (("cs", "critical_ns", critical_ns), ("ncs", "noncritical_ns", noncritical_ns)):
+        if name in swept:
+            start, stop = swept[name]
+            parts.append(f"{prefix}{start}-{stop}ns")
+        elif value:
+            parts.append(f"{prefix}{value}ns")
+    if pin and pin != "none":
+        parts.append(f"pin-{pin}")
+    return "-".join(parts)
+
+
+def run_work_tag(cfg: ExperimentConfig, *, with_sweep: bool = True) -> str:
+    """work_tag() for a config; with_sweep=False leaves out a swept work variable."""
+    if cfg.bench != "max":
+        return ""
+    swept = {}
+    if with_sweep and cfg.sweep is not None and cfg.sweep.var in ("critical_ns", "noncritical_ns"):
+        swept[cfg.sweep.var] = (cfg.sweep.start, cfg.sweep.stop)
+    w = cfg.workload
+    return work_tag(w.critical_ns, w.noncritical_ns, w.pin, swept=swept)
+
+
+def run_title(cfg: ExperimentConfig) -> str:
+    """The run's name with its added work declared (the name of its run folder)."""
+    tag = run_work_tag(cfg)
+    if not tag or cfg.name.endswith(tag):
+        return cfg.name
+    return f"{cfg.name}-{tag}"
+
 
 def tigon_warmup_seconds(cfg_seconds: float, warmup: int | None) -> int:
     run_seconds = max(1, int(cfg_seconds))

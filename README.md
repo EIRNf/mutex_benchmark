@@ -31,15 +31,16 @@ python3 -m scripts run -o capture=throughput -o locks.include=spin,mcs \
 python3 -m scripts run experiments/max_threads.toml --print-config        # check, don't run
 ```
 
-Each run gets its own folder, `data/runs/<timestamp>-<name>/` (or `--dir DIR`):
+Each run gets its own folder, `data/runs/<timestamp>-<name>/` (or `--dir DIR`;
+a max run's name gains its added work and pinning, see below):
 
 | Path | Contents |
 |---|---|
 | `config.toml` | the fully resolved config; `python -m scripts run <it>` repeats the experiment |
-| `run.json` | status (`running`, `complete`, `failed`, `interrupted`), timing, command, git commit and dirty flag, host and `numactl --hardware`, resolved lock list, build flags, and how many data points were written (missing ones are listed); Tigon runs add the submodule commit and `CXLALLOC_BACKEND` (`null` = unset, which Tigon treats as `mmap`) |
+| `run.json` | status (`running`, `complete`, `failed`, `interrupted`), timing, command, git commit and dirty flag, host and `numactl --hardware`, resolved lock list, build flags, the max benchmark's `workload` (and `pinning` order and topology), and how many data points were written (missing ones are listed, with each failure's reason under `failures`); Tigon runs add the submodule commit and `CXLALLOC_BACKEND` (`null` = unset, which Tigon treats as `mmap`) |
 | `raw/` | CSVs |
-| `plots/` | figures and speedup tables |
-| `logs/` | debug logs |
+| `plots/` | figures (including `...-fairness.png` and its `.csv`) and speedup tables |
+| `logs/` | debug logs, and `<point>.failed.txt` for each point that failed or hung |
 
 Re-plot a recorded run without re-running or repeating any flags; only
 `plot.*` settings can change:
@@ -70,9 +71,10 @@ resolved config, which is also a good starting point for a new file.
 | `capture` | `latency`, `throughput`, `rusage` (`latency`) |
 | `threads`, `seconds`, `repetitions` | fixed thread count, seconds per run, runs per point (10, 1, 10) |
 | `[locks]` `sets`, `include`, `exclude` | lock selection, as `-s/-i/-x` (champions set) |
-| `[sweep]` `var`, `start`, `stop`, `step` | inclusive sweep of `threads`, `critical_delay` or `noncritical_delay` |
+| `[sweep]` `var`, `start`, `stop`, `step` | inclusive sweep of `threads`, `critical_ns` or `noncritical_ns` (max); `critical_delay`/`noncritical_delay` with `capture = latency` only |
 | `[memory]` `placement`, `node` | see below (`none`) |
-| `[workload]` `groups`, `critical_delay`, `noncritical_delay`, `stagger_ms` | per-benchmark knobs |
+| `[workload]` `critical_ns`, `noncritical_ns`, `warmup`, `pin` | max benchmark: added work, warmup, thread pinning (none: the roof; 0.5 s; `none`); see below |
+| `[workload]` `groups`, `critical_delay`, `noncritical_delay`, `stagger_ms` | other per-benchmark knobs (`critical_delay`/`noncritical_delay`: legacy busy-loop iterations, `capture = latency` only) |
 | `[tigon]` `query`, `protocol`, `partitions`, `partition_ratio`, `warmup_seconds`, `read_write_ratio`, `read_only_ratio`, `cross_ratio`, `cross_partitions`, `keys`, `zipf`, `neworder_dist`, `payment_dist` | Tigon workload (Tigon benches only) |
 | `[plot]` `layout`, `show`, `scatter`, `max_points`, `variability`, `speedup`, `heatmap`, `heatmap_ref`, `stdev`, `averages` | plotting |
 | `[output]` `log_level` | console log level (`INFO`) |
@@ -89,6 +91,52 @@ With `locks`, every benchmark app places only lock memory; benchmark
 bookkeeping (counters, start/stop flags, thread stacks) stays in ordinary
 memory. Locks that allocate internally without `ALLOCATE` are not placed. CSV
 and figure names carry `cxl-hw-nodeN` (`locks`) or `membind-nodeN` (`process`).
+
+**The max benchmark's workload** (`[workload]`; `--critical-ns`,
+`--noncritical-ns`, `--warmup`, `--pin` on the flag CLI). Every thread
+acquires one shared lock in a loop.
+
+- **The roof.** With no added work a thread reacquires the lock the moment
+  it releases it: the most contention any workload can put on a lock. This
+  is the default, and its loop is compiled without any delay code.
+- **Added work.** `critical_ns` is a fixed length of busy work inside the
+  critical section; `noncritical_ns` is drawn per acquisition, uniformly from
+  0 to twice the value, so the value is its mean. Both are calibrated in
+  nanoseconds at startup (the data file's metadata line records
+  `loops_per_us`), apply to throughput and latency runs alike, and can be
+  swept (`sweep.var = "critical_ns"`). The old `critical_delay` and
+  `noncritical_delay` (busy-loop iterations) only ever changed latency runs;
+  throughput runs ignored them, so they are now rejected there.
+- **Declared everywhere.** Added work and pinning are named in the run
+  folder (`<timestamp>-<name>-cs200ns-ncs1000ns-pin-compact`), a suite's run
+  keys (`vary = { "workload.critical_ns" = [0, 200] }` gives `max`, the roof,
+  and `max-cs200ns`), data and figure file names, every plot title ("Roof: no
+  added work" or "Added work: ..."), and run.json's `workload` block.
+- **Warmup.** Threads run the workload for `warmup` seconds (default 0.5)
+  before counting starts; only the measured window is reported, including
+  `capture = rusage`. Run folders from before warmup existed are titled "no
+  warmup recorded" when re-plotted.
+- **Pinning** (Linux). `pin = "compact"` gives each thread its own physical
+  core, filling one socket before the next and using SMT siblings only after
+  every core has a thread; `"scatter"` alternates sockets. More threads than
+  CPUs wrap around. The order comes from sysfs and the process's CPU
+  affinity; run.json records it with the topology, and each data row records
+  the thread's assigned CPU and the CPU and NUMA node it actually ran on.
+- **Correctness.** A breach of the critical section aborts the benchmark,
+  and a shared counter that disagrees with the completed critical sections
+  (lost updates) exits with status 2. Either way the point is skipped with
+  its output in `logs/<point>.failed.txt`, and run.json's
+  `data_points.failures` gives each failed point's reason.
+- **Fairness.** Every throughput and latency run writes
+  `plots/...-fairness.png` and `.csv`: per lock and sweep point, Jain's
+  fairness index, the slowest thread's count over the mean, and the share of
+  acquisitions that went straight back to the thread that had just released
+  the lock (median over repetitions in the figure, every execution in the CSV).
+
+Thread-level data files start with a `# key=value` metadata line and a header
+row: `thread_id,seconds,iterations,reacquires,cpu_pinned,cpu_start,cpu_end,node_end`
+(`seconds` is the measured window; `-1` where unknown). Older files without
+them still load.
 
 ### Suites (`python -m scripts suite`)
 
@@ -233,7 +281,8 @@ selector; domain-specific flags only apply within their context.
 | **selection** | `-s/-i/-x`, `--placement` | which locks, where memory goes |
 
 Use `--sweep VAR START STOP STEP` to iterate a variable (`threads`,
-`critical-delay`, `noncritical-delay`) over an inclusive range.
+`critical-ns`, `noncritical-ns`; or `critical-delay`, `noncritical-delay` with
+`--capture latency`) over an inclusive range.
 
 ---
 
@@ -458,12 +507,12 @@ chosen reference has no data, the heatmap is skipped with a warning.
 Use `--no-heatmap` to save only the line graph, or `--plot none` to disable
 plots. Latency and rusage captures do not generate heatmaps.
 
-**Sweep critical-section delay (single thread count):**
+**Sweep critical-section work (single thread count):**
 ```bash
 python3 -m scripts.main 8 1 5 \
   --bench max \
   --capture throughput \
-  --sweep critical-delay 0 500 50
+  --sweep critical-ns 0 2000 250
 ```
 
 ---
@@ -473,8 +522,8 @@ python3 -m scripts.main 8 1 5 \
 | Old CLI flag | New CLI equivalent | Notes |
 |---|---|---|
 | `--iter-threads S E N` | `--sweep threads S E N --capture throughput` | sweep VAR is positional first arg |
-| `--iter-critical-delay S E N` | `--sweep critical-delay S E N --capture throughput` | |
-| `--iter-noncritical-delay S E N` | `--sweep noncritical-delay S E N --capture throughput` | |
+| `--iter-critical-delay S E N` | `--sweep critical-ns S E N --capture throughput` | the old delay never changed throughput runs; `-ns` is nanoseconds, not loop iterations |
+| `--iter-noncritical-delay S E N` | `--sweep noncritical-ns S E N --capture throughput` | as above |
 | `--thread-level` | `--capture throughput` | |
 | `--lock-level` | `--capture latency` (default) | |
 | `-r` / `--rusage` | `--capture rusage` | |

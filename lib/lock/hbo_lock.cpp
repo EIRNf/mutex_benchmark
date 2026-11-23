@@ -29,6 +29,11 @@ private:
     size_t num_nodes_;
     std::vector<size_t> thread_node_ids_;  // Maps thread IDs to node IDs
 
+    // TODO(topology): the node is thread_id % num_nodes_, not the thread's real NUMA node.
+    // The benchmark can now pin threads and knows each thread's CPU
+    // (scripts/topology.py, --cpus); map threads from that instead.
+    // Deferred until there is a multi-socket machine to test on; until
+    // then this lock is measured as a flat lock. See LOCK_PERFORMANCE_PLAN.md.
     // Identify which NUMA node a thread belongs to 
     size_t get_node_id(size_t thread_id) const {
         return thread_id % num_nodes_;

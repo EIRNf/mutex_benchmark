@@ -30,6 +30,9 @@ run each of them in:
 Each run's settings are layered: defaults < file < the entry's own keys <
 vary < the environment's memory < command-line overrides. ``vary`` expands
 one entry into one experiment per value (per combination for several keys).
+A max experiment's name declares its added work and pinning, however they
+were set: vary = { "workload.critical_ns" = [0, 200] } gives experiments
+"max" (the roof) and "max-cs200ns".
 
 Running a suite creates data/suites/<timestamp>-<name>/ with suite.toml (the
 file as given), suite.json (the plan and each run's status), suite.log
@@ -69,7 +72,9 @@ from .config import (
     CONFIG_FILE,
     ConfigError,
     ExperimentConfig,
+    apply_overrides,
     check_host,
+    check_new_run,
     config_from_data,
     load_config,
     resolve_lock_names,
@@ -77,6 +82,8 @@ from .config import (
     tigon_warmup_seconds,
     timestamp,
     to_toml,
+    with_run_defaults,
+    work_tag,
 )
 from .rundir import (
     SUITE_CONTEXT_ENV,
@@ -265,6 +272,35 @@ def _label(value) -> str:
     return re.sub(r"[^A-Za-z0-9._+=-]", "_", text)
 
 
+# Settings declared by the work tag at the end of an experiment's name rather
+# than by a "<key>-<value>" vary label.
+_WORK_TAG_KEYS = ("workload.critical_ns", "workload.noncritical_ns", "workload.pin")
+
+
+def _work_tag_from_data(data: dict) -> str:
+    """config.work_tag() for raw (not yet validated) experiment data."""
+    if data.get("bench", ExperimentConfig.bench) != "max":
+        return ""
+    workload = data.get("workload") if isinstance(data.get("workload"), dict) else {}
+    sweep = data.get("sweep") if isinstance(data.get("sweep"), dict) else {}
+    swept = {}
+    var = str(sweep.get("var", "")).replace("-", "_")
+    if var in ("critical_ns", "noncritical_ns"):
+        swept[var] = (sweep.get("start"), sweep.get("stop"))
+    tag = work_tag(workload.get("critical_ns"), workload.get("noncritical_ns"), workload.get("pin"),
+                   swept=swept)
+    return re.sub(r"[^A-Za-z0-9._+=-]", "_", tag)
+
+
+def _with_work_tag(name: str, data: dict, overrides) -> str:
+    try:
+        final = apply_overrides(copy.deepcopy(data), overrides)
+    except ConfigError:
+        return name  # reported when the run's config is built
+    tag = _work_tag_from_data(final)
+    return f"{name}-{tag}" if tag and not name.endswith(tag) else name
+
+
 def _expand_experiment(index: int, raw, defaults: dict, base_dir: str, environment_names):
     """One [[experiments]] entry -> [(name, raw config data, sets memory, environments)].
 
@@ -319,7 +355,8 @@ def _expand_experiment(index: int, raw, defaults: dict, base_dir: str, environme
                 set_dotted(run_data, key, copy.deepcopy(value))
             except ConfigError as exc:
                 raise ConfigError(f"`{where}.vary`: {exc}") from None
-            parts.append(f"{key.rsplit('.', 1)[-1]}-{_label(value)}")
+            if key not in _WORK_TAG_KEYS:
+                parts.append(f"{key.rsplit('.', 1)[-1]}-{_label(value)}")
         expanded.append(("-".join(parts), run_data, sets_memory, only_in))
     return expanded
 
@@ -357,6 +394,10 @@ def suite_from_data(data: dict, overrides=(), *, base_dir: str = ".", default_na
     experiments = []
     for index, raw in enumerate(raw_experiments):
         experiments.extend(_expand_experiment(index, raw, defaults, base_dir, environment_names))
+    experiments = [
+        (_with_work_tag(exp_name, exp_data, overrides), exp_data, sets_memory, only_in)
+        for exp_name, exp_data, sets_memory, only_in in experiments
+    ]
     _check_unique([exp_name for exp_name, _, _, _ in experiments], "experiment")
 
     runs = []
@@ -376,6 +417,7 @@ def suite_from_data(data: dict, overrides=(), *, base_dir: str = ".", default_na
             run_data["name"] = f"{env.name}-{exp_name}" if env else exp_name
             try:
                 cfg = config_from_data(run_data, overrides)
+                check_new_run(cfg)
             except ConfigError as exc:
                 raise ConfigError(f"run {key}: {exc}") from None
             runs.append(PlannedRun(key, exp_name, env.name if env else None, cfg))
@@ -475,7 +517,7 @@ def executions(cfg: ExperimentConfig) -> int:
 def seconds_per_execution(cfg: ExperimentConfig) -> float:
     if cfg.is_tigon:
         return max(1, int(cfg.seconds)) + tigon_warmup_seconds(cfg.seconds, cfg.tigon.warmup_seconds)
-    return cfg.seconds
+    return cfg.seconds + (with_run_defaults(cfg).workload.warmup or 0)
 
 
 def format_duration(seconds: float) -> str:
@@ -545,8 +587,8 @@ def describe_suite(suite: Suite, statuses: dict[str, str] | None = None) -> str:
         lines += ["", "Overrides: " + " ".join(f"-o {override}" for override in suite.overrides)]
     lines += [
         "",
-        f"Total: {total_executions} benchmark executions, about {format_duration(total_seconds)} of measured "
-        "time (excludes builds, startup and plotting).",
+        f"Total: {total_executions} benchmark executions, about {format_duration(total_seconds)} of benchmark "
+        "time (measured plus warmup; excludes builds, startup and plotting).",
     ]
     return "\n".join(lines)
 

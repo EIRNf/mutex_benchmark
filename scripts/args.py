@@ -8,6 +8,7 @@ import argparse
 import re
 
 from .config import (
+    PIN_MODES,
     PLACEMENTS,
     ConfigError,
     RunPaths,
@@ -20,6 +21,7 @@ from .config import (
     Tigon,
     Workload,
     check_host,
+    check_new_run,
     validate,
 )
 from .constants import Constants
@@ -28,7 +30,7 @@ from .settings import resolve_run
 
 
 _ALLOC_ALIASES = {"malloc": "none", "cxl-hardware": "locks"}
-_SWEEP_FLAG_VARS = ("threads", "critical-delay", "noncritical-delay")
+_SWEEP_FLAG_VARS = ("threads", "critical-ns", "noncritical-ns", "critical-delay", "noncritical-delay")
 
 # Config keys (as written in ConfigError messages) -> flag spellings.
 _CLI_FLAGS = {
@@ -126,6 +128,10 @@ def config_from_args(args) -> ExperimentConfig:
         memory=Memory(placement=placement or "none", node=args.numa_node),
         workload=Workload(
             groups=args.groups,
+            critical_ns=args.critical_ns,
+            noncritical_ns=args.noncritical_ns,
+            warmup=args.warmup,
+            pin=args.pin,
             critical_delay=args.critical_delay,
             noncritical_delay=args.noncritical_delay,
             stagger_ms=args.stagger_ms,
@@ -227,12 +233,22 @@ def build_parser():
         metavar=("VAR", "START", "STOP", "STEP"),
         help=(
             "sweep one variable over an inclusive range; "
-            "VAR is one of {threads, critical-delay, noncritical-delay}"
+            "VAR is one of {threads, critical-ns, noncritical-ns, critical-delay, noncritical-delay}"
         ),
     )
     run_group.add_argument("--groups", type=int, help="number of groups for --bench grouped")
-    run_group.add_argument("--critical-delay", type=int, help="critical section busy delay (max bench only)")
-    run_group.add_argument("--noncritical-delay", type=int, help="non-critical section busy delay (max bench only)")
+    run_group.add_argument("--critical-ns", type=int,
+                           help="fixed work inside the critical section, ns (max only; default: none, the roof)")
+    run_group.add_argument("--noncritical-ns", type=int,
+                           help="random work between acquisitions, mean ns, uniform 0-2x (max only; default: none)")
+    run_group.add_argument("--warmup", type=float,
+                           help="seconds to run before measuring (max only; default 0.5)")
+    run_group.add_argument("--pin", choices=PIN_MODES,
+                           help="pin threads to CPUs: compact or scatter (max only, Linux; default none)")
+    run_group.add_argument("--critical-delay", type=int,
+                           help="legacy: critical section busy loop, 0-N iterations (max, --capture latency only)")
+    run_group.add_argument("--noncritical-delay", type=int,
+                           help="legacy: non-critical busy loop, 0-N iterations (max, --capture latency only)")
     run_group.add_argument("--stagger-ms", type=int, help="milliseconds between thread startups (max/min only)")
 
     capture_group = parser.add_argument_group("capture options (what is recorded)")
@@ -362,6 +378,7 @@ def init_args(argv=None):
     try:
         cfg = config_from_args(args)
         if not args.reuse_data:
+            check_new_run(cfg)
             check_host(cfg)
         paths = RunPaths.legacy(args.data_folder, args.log_folder, args.reuse_data)
     except ConfigError as exc:

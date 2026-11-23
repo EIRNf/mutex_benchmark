@@ -151,7 +151,8 @@ def get_savefig_filepath(run, suffix=""):
 
     figs_dir = run.figs_folder
     os.makedirs(figs_dir, exist_ok=True)
-    base = f"{figs_dir}/{ts}-{bench}-{capture}{sweep_part}-{run_part}-{alloc}"
+    work = f"-{run.work_tag}" if run.work_tag else ""
+    base = f"{figs_dir}/{ts}-{bench}-{capture}{sweep_part}-{run_part}-{alloc}{work}"
 
     base += suffix
     path = f"{base}.png"
@@ -160,6 +161,69 @@ def get_savefig_filepath(run, suffix=""):
         path = f"{base}-{n}.png"
         n += 1
     return path
+
+
+# ════════════════════════════════════════════════════════════════
+#  WORKLOAD DESCRIPTION (every title states it)
+# ════════════════════════════════════════════════════════════════
+
+_WORK_VARS = ("critical_ns", "noncritical_ns", "critical_delay", "noncritical_delay")
+
+
+def format_ns(ns):
+    """200 -> '200 ns', 1500 -> '1.5 µs', 2000000 -> '2 ms'."""
+    if ns >= 1_000_000:
+        return f"{ns / 1e6:g} ms"
+    if ns >= 1000:
+        return f"{ns / 1000:g} µs"
+    return f"{ns:g} ns"
+
+
+def describe_workload(run):
+    """One line naming a max run's added work, pinning and warmup ('' for other benches).
+
+    With no added work the run is the roof: every thread reacquires the lock
+    as soon as it releases it.
+    """
+    if run.bench != "max":
+        return ""
+    swept = run.iter_variable_name if run.iter and run.iter_variable_name in _WORK_VARS else None
+    legacy_ignored = run.capture != "latency"
+    work = []
+    if swept == "critical_ns":
+        work.append("critical-section work swept (x axis)")
+    elif run.critical_ns:
+        work.append(f"critical section {format_ns(run.critical_ns)}")
+    if swept == "noncritical_ns":
+        work.append("non-critical work swept (x axis: mean, uniform 0-2x)")
+    elif run.noncritical_ns:
+        work.append(f"non-critical ≈{format_ns(run.noncritical_ns)} "
+                    f"(uniform 0-{format_ns(2 * run.noncritical_ns)})")
+    for name, value, label in (("critical_delay", run.critical_delay, "critical"),
+                               ("noncritical_delay", run.noncritical_delay, "non-critical")):
+        if swept == name or value != -1:
+            amount = "swept (x axis)" if swept == name else f"0-{value}"
+            if legacy_ignored:
+                note = f"legacy {label} delay {amount} had no effect on throughput runs"
+                text = f"Roof: no added work ({note})"
+                return " · ".join([text, *_pin_and_warmup(run)])
+            work.append(f"{label} busy loop {amount} iterations (legacy)")
+    text = "Roof: no added work" if not work else "Added work: " + ", ".join(work)
+    return " · ".join([text, *_pin_and_warmup(run)])
+
+
+def _pin_and_warmup(run):
+    pin = "unpinned" if run.pin == "none" else f"pinned {run.pin}"
+    if run.warmup_seconds is None:
+        warmup = "no warmup recorded"
+    else:
+        warmup = f"warmup {run.warmup_seconds:g} s"
+    return [pin, warmup]
+
+
+def _with_workload(title, run):
+    workload = describe_workload(run)
+    return f"{title}\n{workload}" if workload else title
 
 
 # ════════════════════════════════════════════════════════════════
@@ -237,8 +301,7 @@ def display(run, axes=None, tight_layout=True, suffix=""):
 def get_cdf_title(run):
     title = (f"Lock time CDF — {run.bench_n_threads} threads, "
              f"{run.bench_n_seconds}s ({run.n_program_iterations}×)")
-    if run.noncritical_delay != -1:
-        title += f"\nNon-critical delay: {run.noncritical_delay:,} ns"
+    title = _with_workload(title, run)
     if run.low_contention:
         title += f"\nLow-contention: stagger {run.stagger_ms} ms"
     return title
@@ -315,10 +378,11 @@ def _aggregate_total_throughput(df, var):
 
 def _iter_title(run):
     bench = run.bench.upper()
-    return (f"{bench} contention — total iterations vs "
-            f"{run.iter_variable_name.replace('_', ' ')}\n"
-            f"({run.bench_n_seconds}s per run, "
-            f"{run.n_program_iterations} repetitions)")
+    return _with_workload(
+        f"{bench} contention — total iterations vs "
+        f"{run.iter_variable_name.replace('_', ' ')}\n"
+        f"({run.bench_n_seconds}s per run, "
+        f"{run.n_program_iterations} repetitions)", run)
 
 
 def plot_iter(run, data):
@@ -494,8 +558,8 @@ def plot_throughput_heatmap(run, data, ref_name):
                 cmap='RdYlGn', norm=LogNorm(vmin=1 / extent, vmax=extent),
                 linewidths=0.5, linecolor='white', ax=ax,
                 cbar_kws={'label': f'Total iterations / {ref_name} (1 = equal)'})
-    ax.set_title(f"Relative throughput vs {ref_name}\n"
-                 "Mean run totals; grey = missing or invalid reference")
+    ax.set_title(_with_workload(f"Relative throughput vs {ref_name}\n"
+                                "Mean run totals; grey = missing or invalid reference", run))
     ax.set_xlabel(run.iter_variable_name.replace('_', ' ').title())
     ax.set_ylabel("Mutex")
     display(run, ax, suffix="-heatmap")
@@ -522,10 +586,11 @@ def _compute_variability(df, var):
 
 def _variability_title(run):
     bench = run.bench.upper()
-    return (f"{bench} contention — run-to-run variability vs "
-            f"{run.iter_variable_name.replace('_', ' ')}\n"
-            f"({run.bench_n_seconds}s per run, "
-            f"{run.n_program_iterations} repetitions)")
+    return _with_workload(
+        f"{bench} contention — run-to-run variability vs "
+        f"{run.iter_variable_name.replace('_', ' ')}\n"
+        f"({run.bench_n_seconds}s per run, "
+        f"{run.n_program_iterations} repetitions)", run)
 
 
 def plot_variability(run, data):
@@ -654,6 +719,9 @@ def plot_iter_rusage(run, data):
             ax.grid(True, linestyle=GRID_STYLE, alpha=GRID_ALPHA, linewidth=0.5)
     axis[0].set_title(f"User time vs threads ({run.bench_n_seconds}s, {run.n_program_iterations}×)")
     axis[1].set_title(f"System time vs threads ({run.bench_n_seconds}s, {run.n_program_iterations}×)")
+    workload = describe_workload(run)
+    if workload:
+        fig.suptitle(workload)
     display(run, axis, tight_layout=False)
 
 

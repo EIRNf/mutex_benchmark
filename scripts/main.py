@@ -6,6 +6,7 @@ from .logger import init_logger, logger
 from .args import init_args
 from .constants import Constants
 from .rundir import RunRecord
+from .fairness import fairness_for_iter_run, fairness_for_lock_level_run
 
 
 def run_experiment_lock_level(run):
@@ -16,6 +17,7 @@ def run_experiment_lock_level(run):
     if not run.skip_plotting:
         data = load_data_lock_level(run)
         plot_lock_level(run, data)
+        fairness_for_lock_level_run(run)
 
 
 def run_experiment_iter(run):
@@ -37,6 +39,7 @@ def run_experiment_iter(run):
                 plot_throughput_heatmap(run, data, ref)
         if run.variability:
             plot_variability(run, data)
+        fairness_for_iter_run(run, data)
     if run.speedup:
         data = load_data_iter(run)
         print_speedup_table(run, data)

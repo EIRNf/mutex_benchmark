@@ -8,8 +8,10 @@ Every run writes two files beside its data:
                one without any flags.
   run.json     what actually happened: status (running / complete / failed /
                interrupted), timing, the command, git and host details, the
-               resolved lock list, the build's configured compiler flags, and
-               how many of the expected data points were written.
+               resolved lock list, the build's configured compiler flags, the
+               max benchmark's workload (added work, warmup, pinning with the
+               CPU order and topology), and how many of the expected data
+               points were written, with the reason each missing one failed.
 """
 
 from __future__ import annotations
@@ -24,8 +26,8 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
-from .config import CONFIG_FILE, RECORD_FILE, to_toml
-from .runner import get_data_file_name, placement_tag
+from .config import CONFIG_FILE, RECORD_FILE, run_work_tag, to_toml
+from .runner import failure_note_path, get_data_file_name, placement_tag
 
 _MAX_LISTED_MISSING = 50
 
@@ -97,18 +99,73 @@ def expected_data_files(run) -> list[str]:
     return paths
 
 
+def _failure_reason(run, path: str) -> str | None:
+    """The first line of a missing point's failure note, if the runner left one."""
+    try:
+        with open(failure_note_path(run.logs_folder, path), encoding="utf-8") as handle:
+            return handle.readline().strip() or None
+    except OSError:
+        return None
+
+
 def data_point_summary(run) -> dict:
     expected = expected_data_files(run)
     missing = [
-        os.path.basename(path) for path in expected
+        path for path in expected
         if not (os.path.isfile(path) and os.path.getsize(path) > 0)
     ]
     summary = {"expected": len(expected), "written": len(expected) - len(missing)}
     if missing:
-        summary["missing"] = missing[:_MAX_LISTED_MISSING]
+        summary["missing"] = [os.path.basename(path) for path in missing[:_MAX_LISTED_MISSING]]
         if len(missing) > _MAX_LISTED_MISSING:
             summary["missing_not_listed"] = len(missing) - _MAX_LISTED_MISSING
+        failures = {}
+        for path in missing:
+            reason = _failure_reason(run, path)
+            if reason is not None and len(failures) < _MAX_LISTED_MISSING:
+                failures[os.path.basename(path)] = reason
+        if failures:
+            # Why each missing point failed: a hang, a crash, or lost updates.
+            summary["failures"] = failures
     return summary
+
+
+def workload_record(run) -> dict | None:
+    """The max benchmark's workload as run: added work, warmup and pinning."""
+    if run.bench != "max":
+        return None
+    swept = run.iter_variable_name if run.iter_variable_name in ("critical_ns", "noncritical_ns") else None
+    record = {
+        "critical_ns": "swept" if swept == "critical_ns" else run.critical_ns,
+        "noncritical_ns": "swept" if swept == "noncritical_ns" else run.noncritical_ns,
+        "noncritical_distribution": "uniform from 0 to twice the mean",
+        "roof": not (run.critical_ns or run.noncritical_ns or swept),
+        "warmup_s": run.warmup_seconds,
+        "pin": run.pin,
+        "tag": run_work_tag(run.cfg) or None,
+    }
+    if run.critical_delay != -1 or run.noncritical_delay != -1:
+        record["legacy_delay_iterations"] = {
+            "critical": None if run.critical_delay == -1 else run.critical_delay,
+            "noncritical": None if run.noncritical_delay == -1 else run.noncritical_delay,
+        }
+    return record
+
+
+def pinning_record(run) -> dict | None:
+    """The CPU order threads are pinned in, and the topology it came from."""
+    if run.pin == "none":
+        return None
+    from .topology import TopologyError, host_cpu_order, host_cpus
+    try:
+        return {
+            "mode": run.pin,
+            "order": host_cpu_order(run.pin),
+            "topology_columns": ["cpu", "package", "core", "smt", "node"],
+            "topology": [cpu.as_list() for cpu in host_cpus()],
+        }
+    except TopologyError as exc:
+        return {"mode": run.pin, "error": str(exc)}
 
 
 class RunRecord:
@@ -143,6 +200,12 @@ class RunRecord:
             "git": git_info(),
             "host": host_info(),
         }
+        workload = workload_record(self._run)
+        if workload is not None:
+            self.data["workload"] = workload
+        pinning = pinning_record(self._run)
+        if pinning is not None:
+            self.data["pinning"] = pinning
         if self._cfg.is_tigon:
             self.data["tigon_submodule"] = git_info("apps/tigon_db_bench/tigon")
             # Tigon's allocator backend; null means unset, which Tigon treats as "mmap".

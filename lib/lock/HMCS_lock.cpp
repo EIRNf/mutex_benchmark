@@ -47,6 +47,12 @@ class HMCSLock : public SoftwareMutex {
 private:
     // NUMA architecture, this is adjustable
     static const int MAX_THREADS = 1024; 
+    // TODO(topology): the hierarchy assumes 8 threads per core, 16 cores per socket and 8
+    // sockets, and places thread i by its number, not by where it runs.
+    // The benchmark can now pin threads and knows each thread's CPU
+    // (scripts/topology.py, --cpus); map threads from that instead.
+    // Deferred until there is a multi-socket machine to test on; until
+    // then this lock is measured as a flat lock. See LOCK_PERFORMANCE_PLAN.md.
     static const int THREADS_PER_CORE = 8;    
     static const int CORES_PER_SOCKET = 16;  
     static const int SOCKETS_PER_NODE = 8;    

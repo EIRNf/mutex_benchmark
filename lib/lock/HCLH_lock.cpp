@@ -110,6 +110,12 @@ private:
         }
     }
 
+    // TODO(topology): detect_numa_node() runs on the thread calling init(), once per
+    // thread id, so every thread is mapped to the init thread's socket.
+    // The benchmark can now pin threads and knows each thread's CPU
+    // (scripts/topology.py, --cpus); map threads from that instead.
+    // Deferred until there is a multi-socket machine to test on; until
+    // then this lock is measured as a flat lock. See LOCK_PERFORMANCE_PLAN.md.
     void mapThreadsToLeaves() {
         thread_to_leaf.resize(num_threads);
         int numa_nodes = hierarchy.size();

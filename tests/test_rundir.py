@@ -190,6 +190,11 @@ class RunRecordTests(unittest.TestCase):
             self.assertEqual((record["data_points"]["written"], record["data_points"]["expected"]), (3, 4))
             self.assertEqual(record["data_points"]["missing"],
                              ["spin-max-throughput-rep0-threads=1.csv"])
+            self.assertEqual(record["data_points"]["failures"],
+                             {"spin-max-throughput-rep0-threads=1.csv":
+                              "terminated by SIGSEGV (11): Segmentation fault"})
+            self.assertEqual(record["workload"]["warmup_s"], 0.5)
+            self.assertTrue(record["workload"]["roof"])
             warning = next(line for line in logs.output if "FAILED" in line)
             self.assertIn("FAILED: spin terminated by SIGSEGV (11) (threads=1, rep=0) — skipping this point",
                           warning)

@@ -52,6 +52,12 @@ private:
     TicketLock global_lock;
 
     // Finds which cohort a thread belongs to based on its ID
+    // TODO(topology): the cohort is thread_id % num_nodes with num_nodes fixed at 4, not the
+    // thread's real NUMA node.
+    // The benchmark can now pin threads and knows each thread's CPU
+    // (scripts/topology.py, --cpus); map threads from that instead.
+    // Deferred until there is a multi-socket machine to test on; until
+    // then this lock is measured as a flat lock. See LOCK_PERFORMANCE_PLAN.md.
     // This logic is used to simulate NUMA architecture 
     // In a real NUMA system, this would look different
     size_t get_cohort(size_t thread_id) const {

@@ -17,7 +17,14 @@ import os
 from dataclasses import dataclass
 
 from .builder import default_build_dir
-from .config import ExperimentConfig, RunPaths, resolve_lock_names, tigon_warmup_seconds
+from .config import (
+    ExperimentConfig,
+    RunPaths,
+    resolve_lock_names,
+    run_work_tag,
+    tigon_warmup_seconds,
+    with_run_defaults,
+)
 from .constants import Constants
 
 Defaults = Constants.Defaults
@@ -48,8 +55,13 @@ class RunSettings:
     skip_experiment: bool           # plot existing data instead of running
 
     groups: int | None
-    critical_delay: int             # -1 = not set
-    noncritical_delay: int          # -1 = not set
+    critical_delay: int             # legacy, latency only; -1 = not set
+    noncritical_delay: int          # legacy, latency only; -1 = not set
+    critical_ns: int                # added work; 0 = none
+    noncritical_ns: int             # added work (mean); 0 = none
+    warmup_seconds: float | None    # None = not recorded (a run from before warmup existed)
+    pin: str                        # none | compact | scatter
+    work_tag: str                   # data file fragment declaring added work and pinning
     stagger_ms: int
     low_contention: bool
 
@@ -98,9 +110,13 @@ def resolve_run(cfg: ExperimentConfig, paths: RunPaths | None = None, *,
 
     build_dir defaults to the placement's own build folder (build/ or
     build-hardware_cxl/). skip_build defaults to MUTEX_BENCH_SKIP_BUILD=1.
+    A new run (paths not reusing data) gets with_run_defaults(), so its
+    config.toml records the warmup and pinning it ran with.
     """
     if paths is None:
         paths = RunPaths.legacy(Defaults.DATA_FOLDER, Defaults.LOGS_FOLDER, False)
+    if not paths.reuse:
+        cfg = with_run_defaults(cfg)
     if skip_build is None:
         skip_build = os.environ.get("MUTEX_BENCH_SKIP_BUILD") == "1"
     hardware_cxl = cfg.memory.placement == "locks"
@@ -147,6 +163,11 @@ def resolve_run(cfg: ExperimentConfig, paths: RunPaths | None = None, *,
         groups=w.groups,
         critical_delay=w.critical_delay if w.critical_delay is not None else -1,
         noncritical_delay=w.noncritical_delay if w.noncritical_delay is not None else -1,
+        critical_ns=w.critical_ns or 0,
+        noncritical_ns=w.noncritical_ns or 0,
+        warmup_seconds=w.warmup,
+        pin=w.pin or "none",
+        work_tag=run_work_tag(cfg, with_sweep=False),
         stagger_ms=stagger_ms,
         low_contention=stagger_ms > 0,
         **tigon,

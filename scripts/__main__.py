@@ -7,8 +7,9 @@
     python -m scripts compare SUITE_DIR [--by environment|experiment] [--baseline NAME]
 
 ``run`` executes one experiment into a new run folder (default
-data/runs/<timestamp>-<name>/) holding config.toml, run.json, raw/, plots/
-and logs/. CONFIG is a TOML experiment file (see experiments/ and the
+data/runs/<timestamp>-<name>[-<work>]/, where <work> declares a max run's
+added work and pinning, e.g. cs200ns-ncs1000ns-pin-compact) holding
+config.toml, run.json, raw/, plots/ and logs/. CONFIG is a TOML experiment file (see experiments/ and the
 README); each ``-o`` sets one setting by its dotted key and wins over the
 file. With no CONFIG, the run uses the defaults plus the overrides.
 
@@ -37,8 +38,11 @@ from .config import (
     ConfigError,
     RunPaths,
     check_host,
+    check_new_run,
     load_config,
+    run_title,
     to_toml,
+    with_run_defaults,
 )
 from .settings import resolve_run
 
@@ -172,10 +176,11 @@ def _run(parser, ns):
     try:
         cfg = load_config(config_path, ns.override)
         if ns.print_config:
-            sys.stdout.write(to_toml(cfg))
+            sys.stdout.write(to_toml(with_run_defaults(cfg)))
             return 0
+        check_new_run(cfg)
         check_host(cfg)
-        paths = RunPaths.for_new_run(cfg.name, run_dir)
+        paths = RunPaths.for_new_run(run_title(cfg), run_dir)
     except ConfigError as exc:
         parser.error(str(exc))
 

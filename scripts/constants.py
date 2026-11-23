@@ -42,6 +42,10 @@ class Constants:
         ]
 
         # -- Hierarchical / cohort locks (NUMA-structured) ---------------------
+        # TODO(topology): none of these sees the real machine layout yet (cohort
+        # = thread_id % N, hard-coded or init-thread sockets), so they behave as
+        # flat locks; see the TODO(topology) notes in their sources and
+        # LOCK_PERFORMANCE_PLAN.md. Do not read their results as hierarchical.
         HIERARCHICAL_SERIES = [
             "hmcs",
             "hclh",

@@ -228,7 +228,8 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(executions(s.runs[0].cfg), 4)  # 2 locks x 2 thread counts x 1 rep
         text = describe_suite(s)
         self.assertIn("4 runs (2 environments x 2 experiments)", text)
-        self.assertIn("Total: 16 benchmark executions, about 0m 16s", text)
+        # 16 one-second executions, plus max's default 0.5 s warmup for its 8.
+        self.assertIn("Total: 16 benchmark executions, about 0m 20s", text)
         self.assertIn("build-hardware_cxl/   -Dhardware_cxl -lnuma -std=c++20", text)
 
 
